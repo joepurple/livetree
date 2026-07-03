@@ -1,27 +1,38 @@
-# treeswitch
+# livetree
 
-`treeswitch` switches a stable runner symlink for a Git project:
+`livetree` switches a stable runner symlink for a Git project:
 
 ```text
-<main-worktree>/.live-tree/src -> <selected-worktree>
+<main-worktree>/.livetree/src -> <selected-worktree>
 ```
 
 Run it from any worktree that belongs to the project.
 
 ```sh
-treeswitch
-treeswitch <selector>
-treeswitch init
-treeswitch run <script-name>
-treeswitch run --static <script-name>
-treeswitch rm
+livetree
+livetree <selector>
+livetree list
+livetree ls
+livetree init
+livetree run <script-name> [args...]
+livetree watch <script-name> [args...]
+livetree rm
 ```
 
-`tsw` is installed as a shorthand for the same command.
+`lt` is installed as a shorthand for the same command.
 
-With no selector, `treeswitch` opens a small picker. With a selector, it matches a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
+With no selector, `livetree` opens a small picker. With a selector, it matches a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
 
-Use `treeswitch init` to choose a worktree, newest-created first, copy any configured files from the main worktree into it, and run the project init script in that worktree. Define init behavior in `.tswconf` at the main worktree root:
+Use `livetree list` or `lt ls` to print worktrees newest-modified first:
+
+```text
+10m  * Plan push notifications rollout [push-notifs]
+    /Users/avinoam/.codex/worktrees/b3d2/ecosconnect
+1h     ROOT [mobile-dev]
+    /Users/avinoam/code/ecosconnect
+```
+
+Use `livetree init` to initialize every worktree that has not been initialized yet. A worktree is considered initialized when `<worktree>/.livetree` exists. For each uninitialized worktree, `livetree` copies any configured files from the main worktree, runs the project init script in that worktree, then writes `<worktree>/.livetree/.source` as the initialization marker. Define init behavior in `.ltconf` at the main worktree root:
 
 ```yaml
 init:
@@ -46,7 +57,7 @@ init:
 
 The shorthand forms `init: pnpm install`, `initScript: pnpm install`, and `scripts:` with an indented `init:` value are also supported.
 
-Define reusable live-tree commands under `run`:
+Define reusable livetree commands under `run`:
 
 ```yaml
 run:
@@ -55,13 +66,21 @@ run:
   mobile: cd src/modules/mobile && pnpm start
 ```
 
-Run them with `treeswitch run api` or `tsw run api`. Run scripts start in `<main-worktree>/.live-tree`, so paths should go through `src/...`. By default, `treeswitch` watches `.live-tree/src`; when you switch the active worktree, it stops the current process tree and starts the script again against the new target. Add `--static` to run once without watching or restarting:
+Run them once with `livetree run api` or `lt run api`. Run scripts start in `<main-worktree>/.livetree`, so paths should go through `src/...`.
+
+Use `livetree watch api` or `lt watch api` to keep a script tied to the live worktree. `livetree` watches `.livetree/src`; when you switch the active worktree, it stops the current process tree and starts the script again against the new target:
 
 ```sh
-tsw run --static web
+lt watch web
 ```
 
-Use `treeswitch rm`, `treeswitch remove`, or `treeswitch delete` to select linked worktrees to remove. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `treeswitch` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `treeswitch` prunes the stale Git metadata and asks before deleting the leftover directory.
+Any extra arguments after the script name are passed through to the configured command:
+
+```sh
+lt run lt init
+```
+
+Use `livetree rm`, `livetree remove`, or `livetree delete` to select linked worktrees to remove. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `livetree` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `livetree` prunes the stale Git metadata and asks before deleting the leftover directory.
 
 Install locally while developing:
 

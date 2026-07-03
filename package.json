@@ -1,11 +1,11 @@
 {
-  "name": "treeswitch",
+  "name": "livetree",
   "version": "0.1.0",
-  "description": "Switch a stable .live-tree/src symlink between Git worktrees.",
+  "description": "Switch a stable .livetree/src symlink between Git worktrees.",
   "type": "module",
   "bin": {
-    "treeswitch": "./dist/cli.js",
-    "tsw": "./dist/cli.js"
+    "livetree": "./dist/cli.js",
+    "lt": "./dist/cli.js"
   },
   "files": [
     "dist"

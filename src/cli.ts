@@ -35,9 +35,6 @@ type ProjectContext = {
   liveDir: string;
   srcLink: string;
   stateFile: string;
-  legacyLiveDir: string;
-  legacySrcLink: string;
-  legacyStateFile: string;
   choices: WorktreeChoice[];
 };
 
@@ -54,13 +51,16 @@ class WorktreeRemoveNeedsForceError extends CliError {}
 class WorktreeRemovePrunableError extends CliError {}
 
 const usage = `Usage:
-  treeswitch
-  treeswitch <selector>
-  treeswitch init
-  treeswitch run [--static] <script-name>
-  treeswitch rm
-  treeswitch remove
-  treeswitch delete
+  livetree
+  livetree <selector>
+  livetree list
+  livetree ls
+  livetree init
+  livetree run <script-name> [args...]
+  livetree watch <script-name> [args...]
+  livetree rm
+  livetree remove
+  livetree delete
 
 Selectors can be a branch name, worktree directory name, commit prefix, path,
 Codex thread id prefix, or Codex chat title fragment.`;
@@ -79,21 +79,35 @@ async function main(): Promise<void> {
 
   if (args[0] === "init") {
     if (args.length > 1) {
-      throw new CliError("Usage: treeswitch init");
+      throw new CliError("Usage: livetree init");
     }
 
     await initWorktree(context);
     return;
   }
 
+  if (["list", "ls"].includes(args[0] ?? "")) {
+    if (args.length > 1) {
+      throw new CliError("Usage: livetree list");
+    }
+
+    listWorktrees(context);
+    return;
+  }
+
   if (args[0] === "run") {
-    await runConfiguredScript(context, args.slice(1));
+    await runConfiguredScript(context, args.slice(1), false);
+    return;
+  }
+
+  if (args[0] === "watch") {
+    await runConfiguredScript(context, args.slice(1), true);
     return;
   }
 
   if (["rm", "remove", "delete"].includes(args[0] ?? "")) {
     if (args.length > 1) {
-      throw new CliError("Usage: treeswitch rm");
+      throw new CliError("Usage: livetree rm");
     }
 
     await removeWorktrees(context);
@@ -106,7 +120,7 @@ async function main(): Promise<void> {
 }
 
 function buildProjectContext(cwd: string): ProjectContext {
-  const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "treeswitch must be run inside a Git worktree.");
+  const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "livetree must be run inside a Git worktree.");
   const commonDir = gitCommonDir(currentRoot);
   const records = parseWorktreeList(git(["--git-dir", commonDir, "worktree", "list", "--porcelain"], currentRoot));
   const worktrees = records.filter((record) => !record.bare);
@@ -116,12 +130,9 @@ function buildProjectContext(cwd: string): ProjectContext {
     throw new CliError("No non-bare worktrees found for this project.");
   }
 
-  const liveDir = path.join(mainRoot, ".live-tree");
+  const liveDir = path.join(mainRoot, ".livetree");
   const srcLink = path.join(liveDir, "src");
   const stateFile = path.join(liveDir, ".source");
-  const legacyLiveDir = path.join(mainRoot, "live-tree");
-  const legacySrcLink = path.join(legacyLiveDir, "src");
-  const legacyStateFile = path.join(legacyLiveDir, ".source");
   const choices = worktrees.map((record, index) => enrichWorktree(record, index === 0));
 
   return {
@@ -132,9 +143,6 @@ function buildProjectContext(cwd: string): ProjectContext {
     liveDir,
     srcLink,
     stateFile,
-    legacyLiveDir,
-    legacySrcLink,
-    legacyStateFile,
     choices,
   };
 }
@@ -280,7 +288,7 @@ async function selectWorktree(context: ProjectContext): Promise<WorktreeChoice> 
 
     const render = (): void => {
       const lines = [
-        "Select the worktree for .live-tree/src",
+        "Select the worktree for .livetree/src",
         "Use Up/Down, j/k, Enter to choose, q to cancel.",
         "",
       ];
@@ -365,25 +373,199 @@ function switchSource(context: ProjectContext, target: WorktreeChoice): void {
 
   symlinkSync(target.path, context.srcLink, "dir");
   writeFileSync(context.stateFile, `${target.path}\n`, "utf8");
-  console.log(`.live-tree/src -> ${target.path}`);
+  console.log(`.livetree/src -> ${target.path}`);
   console.log(`Active: ${target.label}`);
 }
 
+function listWorktrees(context: ProjectContext): void {
+  const active = activeSource(context);
+  const choices = worktreesModifiedNewestFirst(context.choices);
+  const ages = choices.map((choice) => formatRelativeAge(choice.modifiedAtMs));
+  const ageWidth = Math.max(...ages.map((age) => age.length), 0);
+
+  for (let index = 0; index < choices.length; index += 1) {
+    const item = choices[index]!;
+    const age = ages[index]!;
+    console.log(`${age.padStart(ageWidth)}  ${formatChoiceLabel(item.choice, active)}`);
+    console.log(`    ${dim(item.choice.path)}`);
+  }
+}
+
+function worktreesModifiedNewestFirst(choices: WorktreeChoice[]): ModifiedWorktreeChoice[] {
+  return choices
+    .map((choice) => ({ choice, modifiedAtMs: worktreeModifiedAtMs(choice) }))
+    .sort((left, right) => {
+      if (right.modifiedAtMs !== left.modifiedAtMs) {
+        return right.modifiedAtMs - left.modifiedAtMs;
+      }
+
+      return left.choice.path.localeCompare(right.choice.path);
+    });
+}
+
+function worktreeModifiedAtMs(choice: WorktreeChoice): number {
+  const rootModifiedAt = pathModifiedAtMs(choice.path);
+  const dirtyModifiedAt = worktreeDirtyModifiedAtMs(choice.path);
+  const commitModifiedAt = worktreeLastCommitAtMs(choice.path);
+  return maxPositiveNumber(rootModifiedAt, dirtyModifiedAt, commitModifiedAt) ?? Number.NEGATIVE_INFINITY;
+}
+
+function worktreeDirtyModifiedAtMs(worktreePath: string): number | null {
+  let output: string;
+  try {
+    output = execFileSync("git", ["-C", worktreePath, "status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+
+  const modifiedTimes = parsePorcelainPaths(output)
+    .map((relativePath) => pathModifiedAtMs(path.join(worktreePath, relativePath)))
+    .filter((value): value is number => value !== null);
+
+  return maxPositiveNumber(...modifiedTimes);
+}
+
+function parsePorcelainPaths(output: string): string[] {
+  const paths: string[] = [];
+  const records = output.split("\0").filter(Boolean);
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    if (record.length < 4) {
+      continue;
+    }
+
+    const status = record.slice(0, 2);
+    const firstPath = record.slice(3);
+    if (firstPath) {
+      paths.push(firstPath);
+    }
+
+    if (status.includes("R") || status.includes("C")) {
+      const secondPath = records[index + 1];
+      if (secondPath) {
+        paths.push(secondPath);
+        index += 1;
+      }
+    }
+  }
+
+  return paths;
+}
+
+function worktreeLastCommitAtMs(worktreePath: string): number | null {
+  let output: string;
+  try {
+    output = execFileSync("git", ["-C", worktreePath, "log", "-1", "--format=%ct"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+
+  const seconds = Number.parseInt(output, 10);
+  return Number.isFinite(seconds) ? seconds * 1000 : null;
+}
+
+function pathModifiedAtMs(value: string): number | null {
+  try {
+    const stats = lstatSync(value);
+    return maxPositiveNumber(stats.mtimeMs, stats.ctimeMs);
+  } catch {
+    return null;
+  }
+}
+
+function maxPositiveNumber(...values: Array<number | null | undefined>): number | null {
+  let maximum: number | null = null;
+  for (const value of values) {
+    if (value === undefined || value === null || !Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+
+    maximum = maximum === null ? value : Math.max(maximum, value);
+  }
+
+  return maximum;
+}
+
+function formatRelativeAge(modifiedAtMs: number): string {
+  if (!Number.isFinite(modifiedAtMs)) {
+    return "?";
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - modifiedAtMs) / 1000));
+  if (elapsedSeconds < 60) {
+    return "0m";
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m`;
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h`;
+  }
+
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  if (elapsedDays < 7) {
+    return `${elapsedDays}d`;
+  }
+
+  const elapsedWeeks = Math.floor(elapsedDays / 7);
+  if (elapsedWeeks < 8) {
+    return `${elapsedWeeks}w`;
+  }
+
+  const elapsedMonths = Math.floor(elapsedDays / 30);
+  if (elapsedMonths < 12) {
+    return `${elapsedMonths}mo`;
+  }
+
+  return `${Math.floor(elapsedDays / 365)}y`;
+}
+
+function dim(value: string): string {
+  if (!process.stdout.isTTY || process.env.NO_COLOR) {
+    return value;
+  }
+
+  return `\x1b[2m${value}\x1b[0m`;
+}
+
 async function initWorktree(context: ProjectContext): Promise<void> {
-  const config = readTswConfig(context);
+  const config = readLtConfig(context);
   if (!config.initScript) {
     throw new CliError(
-      `.tswconf must define an init script.\n\nSupported examples:\ninit:\n  copy:\n    - modules/api/.env\n  script: pnpm install\n\ninit:\n  script: |\n    corepack enable\n    pnpm install`,
+      `.ltconf must define an init script.\n\nSupported examples:\ninit:\n  copy:\n    - modules/api/.env\n  script: pnpm install\n\ninit:\n  script: |\n    corepack enable\n    pnpm install`,
     );
   }
 
-  const target = await selectInitWorktree(context);
   console.log(`Using init config: ${config.configPath}`);
-  copyInitFiles(context, target, config.copyFiles);
-  runInitScript(target, config.initScript);
+  const targets = uninitializedWorktreesNewestFirst(context.choices);
+  if (targets.length === 0) {
+    console.log("No uninitialized worktrees found.");
+    return;
+  }
+
+  console.log(`Initializing ${targets.length} worktree${targets.length === 1 ? "" : "s"}.`);
+  for (const target of targets) {
+    console.log(`\nInitializing: ${target.label}`);
+    console.log(target.path);
+    copyInitFiles(context, target, config.copyFiles);
+    runInitScript(target, config.initScript);
+    markWorktreeInitialized(target);
+    console.log(`Initialized: ${target.label}`);
+  }
 }
 
-type TswConfig = {
+type LtConfig = {
   initScript: string | null;
   copyFiles: string[];
   runScripts: Record<string, string>;
@@ -392,12 +574,17 @@ type TswConfig = {
 
 type RunOptions = {
   scriptName: string | null;
-  staticMode: boolean;
+  scriptArgs: string[];
 };
 
-type LiveSourceSnapshot = {
+type LivetreeSourceSnapshot = {
   source: string;
   key: string;
+};
+
+type ModifiedWorktreeChoice = {
+  choice: WorktreeChoice;
+  modifiedAtMs: number;
 };
 
 type CreatedWorktreeChoice = {
@@ -405,91 +592,38 @@ type CreatedWorktreeChoice = {
   createdAtMs: number;
 };
 
-async function selectInitWorktree(context: ProjectContext): Promise<WorktreeChoice> {
-  const active = activeSource(context);
-  const choices = worktreesNewestFirst(context.choices);
+function uninitializedWorktreesNewestFirst(choices: WorktreeChoice[]): WorktreeChoice[] {
+  return worktreesNewestFirst(choices)
+    .map((choice) => choice.choice)
+    .filter((choice) => !isWorktreeInitialized(choice));
+}
 
-  if (!process.stdin.isTTY) {
-    throw new CliError(`Choose a worktree to initialize from an interactive terminal:\n${formatNumberedCreatedChoiceList(choices, active)}`);
+function isWorktreeInitialized(choice: WorktreeChoice): boolean {
+  const liveDir = path.join(choice.path, ".livetree");
+  try {
+    const stats = lstatSync(liveDir);
+    if (stats.isDirectory()) {
+      return true;
+    }
+
+    throw new CliError(`Cannot initialize worktree because .livetree exists and is not a directory: ${liveDir}`);
+  } catch (error) {
+    if (error instanceof CliError) {
+      throw error;
+    }
+
+    return false;
+  }
+}
+
+function markWorktreeInitialized(choice: WorktreeChoice): void {
+  const liveDir = path.join(choice.path, ".livetree");
+  if (existsSync(liveDir) && !lstatSync(liveDir).isDirectory()) {
+    throw new CliError(`Cannot mark worktree initialized because .livetree is not a directory: ${liveDir}`);
   }
 
-  let selectedIndex = 0;
-
-  return new Promise((resolve, reject) => {
-    const stdin = process.stdin;
-    let renderedLines = 0;
-
-    const cleanup = (): void => {
-      stdin.off("keypress", onKeypress);
-      if (stdin.isTTY) {
-        stdin.setRawMode(false);
-      }
-      stdin.pause();
-    };
-
-    const render = (): void => {
-      const lines = [
-        "Select worktree to initialize",
-        "Newest worktrees first. Use Up/Down, j/k, Enter to choose, q to cancel.",
-        "",
-      ];
-
-      for (let index = 0; index < choices.length; index += 1) {
-        const item = choices[index]!;
-        const line = formatCreatedChoiceLabel(item, active);
-        lines.push(index === selectedIndex ? `\x1b[7m> ${line}\x1b[0m` : `  ${line}`);
-      }
-
-      writeInlineBlock(lines, renderedLines);
-      renderedLines = lines.length;
-    };
-
-    const finish = (): void => {
-      cleanup();
-      resolve(choices[selectedIndex]!.choice);
-    };
-
-    const cancel = (): void => {
-      cleanup();
-      process.stderr.write("Canceled.\n");
-      reject(new CliError("Canceled."));
-    };
-
-    const onKeypress = (value: string, key: readline.Key): void => {
-      if (key.ctrl && key.name === "c") {
-        cancel();
-        return;
-      }
-
-      switch (key.name ?? value) {
-        case "return":
-        case "enter":
-          finish();
-          return;
-        case "q":
-          cancel();
-          return;
-        case "up":
-        case "k":
-          selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : choices.length - 1;
-          render();
-          return;
-        case "down":
-        case "j":
-          selectedIndex = (selectedIndex + 1) % choices.length;
-          render();
-          return;
-        default:
-          return;
-      }
-    };
-
-    readline.emitKeypressEvents(stdin);
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.on("keypress", onKeypress);
-    render();
-  });
+  mkdirSync(liveDir, { recursive: true });
+  writeFileSync(path.join(liveDir, ".source"), `${choice.path}\n`, "utf8");
 }
 
 function worktreesNewestFirst(choices: WorktreeChoice[]): CreatedWorktreeChoice[] {
@@ -521,26 +655,6 @@ function firstPositiveNumber(...values: number[]): number | null {
   }
 
   return null;
-}
-
-function formatNumberedCreatedChoiceList(choices: CreatedWorktreeChoice[], active: string | null): string {
-  return choices.map((choice, index) => `  ${index + 1}. ${formatCreatedChoiceLabel(choice, active)}`).join("\n");
-}
-
-function formatCreatedChoiceLabel(choice: CreatedWorktreeChoice, active: string | null): string {
-  return `${formatChoiceLabel(choice.choice, active)}  ${formatCreatedAt(choice.createdAtMs)}  ${choice.choice.path}`;
-}
-
-function formatCreatedAt(createdAtMs: number): string {
-  if (!Number.isFinite(createdAtMs)) {
-    return "created unknown";
-  }
-
-  const value = new Date(createdAtMs);
-  return `created ${value.toLocaleString(undefined, {
-    dateStyle: "short",
-    timeStyle: "short",
-  })}`;
 }
 
 function runInitScript(target: WorktreeChoice, script: string): void {
@@ -595,12 +709,13 @@ function copyInitFiles(context: ProjectContext, target: WorktreeChoice, copyFile
   }
 }
 
-async function runConfiguredScript(context: ProjectContext, args: string[]): Promise<void> {
-  const options = parseRunArgs(args);
-  const config = readTswConfig(context);
+async function runConfiguredScript(context: ProjectContext, args: string[], watch: boolean): Promise<void> {
+  const command = watch ? "watch" : "run";
+  const options = parseRunArgs(args, command);
+  const config = readLtConfig(context);
 
   if (!options.scriptName) {
-    throw new CliError(`Usage: treeswitch run [--static] <script-name>${formatAvailableRunScripts(config)}`);
+    throw new CliError(`Usage: livetree ${command} <script-name> [args...]${formatAvailableRunScripts(config)}`);
   }
 
   const script = config.runScripts[options.scriptName];
@@ -608,42 +723,48 @@ async function runConfiguredScript(context: ProjectContext, args: string[]): Pro
     throw new CliError(`No run script named '${options.scriptName}' in ${config.configPath}.${formatAvailableRunScripts(config)}`);
   }
 
-  if (options.staticMode) {
-    runScriptOnce(context, options.scriptName, script);
-    return;
+  if (watch) {
+    await runWatchedScript(context, options.scriptName, script, options.scriptArgs);
+  } else {
+    runScriptOnce(context, options.scriptName, script, options.scriptArgs);
   }
-
-  await runWatchedScript(context, options.scriptName, script);
 }
 
-function parseRunArgs(args: string[]): RunOptions {
-  let staticMode = false;
-  const positional: string[] = [];
+function parseRunArgs(args: string[], command: "run" | "watch"): RunOptions {
+  let scriptName: string | null = null;
+  const scriptArgs: string[] = [];
 
   for (const arg of args) {
-    if (arg === "--static") {
-      staticMode = true;
+    if (!scriptName) {
+      if (command === "run" && arg === "--static") {
+        continue;
+      }
+
+      if (arg.startsWith("-")) {
+        throw new CliError(`Unknown ${command} option: ${arg}\n\nUsage: livetree ${command} <script-name> [args...]`);
+      }
+
+      scriptName = arg;
       continue;
     }
 
-    if (arg.startsWith("-")) {
-      throw new CliError(`Unknown run option: ${arg}\n\nUsage: treeswitch run [--static] <script-name>`);
-    }
-
-    positional.push(arg);
+    scriptArgs.push(arg);
   }
 
-  if (positional.length > 1) {
-    throw new CliError("Usage: treeswitch run [--static] <script-name>");
+  if (!scriptName) {
+    return {
+      scriptName: null,
+      scriptArgs,
+    };
   }
 
   return {
-    scriptName: positional[0] ?? null,
-    staticMode,
+    scriptName,
+    scriptArgs,
   };
 }
 
-function formatAvailableRunScripts(config: TswConfig): string {
+function formatAvailableRunScripts(config: LtConfig): string {
   const names = Object.keys(config.runScripts).sort();
   if (names.length === 0) {
     return `\n\nNo run scripts are defined in ${config.configPath}. Add one like:\nrun:\n  web: cd src/modules/web && pnpm start`;
@@ -652,9 +773,25 @@ function formatAvailableRunScripts(config: TswConfig): string {
   return `\n\nAvailable run scripts:\n${names.map((name) => `  ${name}`).join("\n")}`;
 }
 
-function runScriptOnce(context: ProjectContext, scriptName: string, script: string): void {
-  const snapshot = requireRunnableLiveSource(context);
-  const result = spawnSync(script, {
+function scriptWithArgs(script: string, args: string[]): string {
+  if (args.length === 0) {
+    return script;
+  }
+
+  return `${script} ${args.map(shellQuote).join(" ")}`;
+}
+
+function shellQuote(value: string): string {
+  if (value === "") {
+    return "''";
+  }
+
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function runScriptOnce(context: ProjectContext, scriptName: string, script: string, scriptArgs: string[]): void {
+  const snapshot = requireRunnableLivetreeSource(context);
+  const result = spawnSync(scriptWithArgs(script, scriptArgs), {
     cwd: context.liveDir,
     env: runScriptEnv(context, scriptName, snapshot.source),
     shell: true,
@@ -664,9 +801,9 @@ function runScriptOnce(context: ProjectContext, scriptName: string, script: stri
   assertRunResult(result, scriptName);
 }
 
-async function runWatchedScript(context: ProjectContext, scriptName: string, script: string): Promise<void> {
+async function runWatchedScript(context: ProjectContext, scriptName: string, script: string, scriptArgs: string[]): Promise<void> {
   mkdirSync(context.liveDir, { recursive: true });
-  let current = requireRunnableLiveSource(context);
+  let current = requireRunnableLivetreeSource(context);
   let child: ChildProcess | null = null;
   let stoppingChild: ChildProcess | null = null;
   let restarting = false;
@@ -674,13 +811,13 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
   let missingLogged = false;
   let poll: NodeJS.Timeout | null = null;
 
-  console.error(`tsw run ${scriptName}: watching ${context.srcLink}`);
+  console.error(`lt watch ${scriptName}: watching ${context.srcLink}`);
 
-  const start = (snapshot: LiveSourceSnapshot): void => {
+  const start = (snapshot: LivetreeSourceSnapshot): void => {
     current = snapshot;
     missingLogged = false;
-    console.error(`tsw run ${scriptName}: starting for ${snapshot.source}`);
-    const startedChild = spawn(script, {
+    console.error(`lt watch ${scriptName}: starting for ${snapshot.source}`);
+    const startedChild = spawn(scriptWithArgs(script, scriptArgs), {
       cwd: context.liveDir,
       env: runScriptEnv(context, scriptName, snapshot.source),
       shell: true,
@@ -727,7 +864,7 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
     process.off("SIGTERM", onSigterm);
   };
 
-  const restart = async (next: LiveSourceSnapshot | null): Promise<void> => {
+  const restart = async (next: LivetreeSourceSnapshot | null): Promise<void> => {
     if (restarting || shuttingDown) {
       return;
     }
@@ -755,15 +892,15 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
     }
 
     if (!missingLogged) {
-      console.error(`tsw run ${scriptName}: waiting for ${context.srcLink}`);
+      console.error(`lt watch ${scriptName}: waiting for ${context.srcLink}`);
       missingLogged = true;
     }
   };
 
   const checkForChange = (): void => {
-    let next: LiveSourceSnapshot | null;
+    let next: LivetreeSourceSnapshot | null;
     try {
-      next = readRunnableLiveSource(context);
+      next = readRunnableLivetreeSource(context);
     } catch (error) {
       cleanup();
       rejectRun(error instanceof CliError ? error : new CliError(error instanceof Error ? error.message : String(error)));
@@ -776,7 +913,7 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
     }
 
     if (!child || next.key !== current.key) {
-      console.error(`tsw run ${scriptName}: live tree changed`);
+      console.error(`lt watch ${scriptName}: live tree changed`);
       void restart(next);
     }
   };
@@ -819,11 +956,11 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
 function runScriptEnv(context: ProjectContext, scriptName: string, activeSourcePath: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    TSW_ACTIVE_WORKTREE: activeSourcePath,
-    TSW_LIVE_DIR: context.liveDir,
-    TSW_LIVE_SRC: context.srcLink,
-    TSW_PROJECT_ROOT: context.mainRoot,
-    TSW_SCRIPT: scriptName,
+    LT_ACTIVE_WORKTREE: activeSourcePath,
+    LT_LIVE_DIR: context.liveDir,
+    LT_LIVE_SRC: context.srcLink,
+    LT_PROJECT_ROOT: context.mainRoot,
+    LT_SCRIPT: scriptName,
   };
 }
 
@@ -841,16 +978,16 @@ function assertRunResult(result: SpawnSyncReturns<Buffer>, scriptName: string): 
   }
 }
 
-function requireRunnableLiveSource(context: ProjectContext): LiveSourceSnapshot {
-  const snapshot = readRunnableLiveSource(context);
+function requireRunnableLivetreeSource(context: ProjectContext): LivetreeSourceSnapshot {
+  const snapshot = readRunnableLivetreeSource(context);
   if (!snapshot) {
-    throw new CliError(`No active .live-tree/src target. Run 'tsw' to select a worktree first.`);
+    throw new CliError(`No active .livetree/src target. Run 'lt' to select a worktree first.`);
   }
 
   return snapshot;
 }
 
-function readRunnableLiveSource(context: ProjectContext): LiveSourceSnapshot | null {
+function readRunnableLivetreeSource(context: ProjectContext): LivetreeSourceSnapshot | null {
   if (existsSync(context.srcLink) && !lstatSync(context.srcLink).isSymbolicLink()) {
     throw new CliError(`Refusing to run with non-symlink path: ${context.srcLink}`);
   }
@@ -945,13 +1082,13 @@ function signalExitCode(signal: NodeJS.Signals): number {
   return 1;
 }
 
-function readTswConfig(context: ProjectContext): TswConfig {
-  const configPath = path.join(context.mainRoot, ".tswconf");
+function readLtConfig(context: ProjectContext): LtConfig {
+  const configPath = path.join(context.mainRoot, ".ltconf");
   if (!existsSync(configPath)) {
-    throw new CliError(`No .tswconf found at ${configPath}.\n\nAdd one like:\ninit:\n  script: pnpm install\nrun:\n  web: cd src/modules/web && pnpm start`);
+    throw new CliError(`No .ltconf found at ${configPath}.\n\nAdd one like:\ninit:\n  script: pnpm install\nrun:\n  web: cd src/modules/web && pnpm start`);
   }
 
-  const config = parseTswConfig(readFileSync(configPath, "utf8"));
+  const config = parseLtConfig(readFileSync(configPath, "utf8"));
   return {
     configPath,
     initScript: config.initScript,
@@ -966,13 +1103,13 @@ type YamlKeyLine = {
   value: string;
 };
 
-type ParsedTswConfig = {
+type ParsedLtConfig = {
   initScript: string | null;
   copyFiles: string[];
   runScripts: Record<string, string>;
 };
 
-function parseTswConfig(source: string): ParsedTswConfig {
+function parseLtConfig(source: string): ParsedLtConfig {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   let initScript: string | null = null;
   let copyFiles: string[] = [];
@@ -1248,7 +1385,7 @@ async function removeWorktrees(context: ProjectContext): Promise<void> {
   const active = activeSource(context);
 
   if (candidates.length === 0) {
-    throw new CliError("No removable worktrees found. ROOT cannot be removed by treeswitch.");
+    throw new CliError("No removable worktrees found. ROOT cannot be removed by livetree.");
   }
 
   if (!process.stdin.isTTY) {
@@ -1519,8 +1656,7 @@ function formatGitFailure(error: unknown, command: string): string {
 
 function clearRemovedActiveSources(context: ProjectContext, removed: WorktreeChoice[]): string[] {
   return [
-    clearRemovedActiveSource(".live-tree/src", context.liveDir, context.srcLink, context.stateFile, removed),
-    clearRemovedActiveSource("live-tree/src", context.legacyLiveDir, context.legacySrcLink, context.legacyStateFile, removed),
+    clearRemovedActiveSource(".livetree/src", context.liveDir, context.srcLink, context.stateFile, removed),
   ].filter((sourceName): sourceName is string => sourceName !== null);
 }
 
@@ -1548,10 +1684,7 @@ function clearRemovedActiveSource(
 }
 
 function activeSource(context: ProjectContext): string | null {
-  return (
-    activeSourceFrom(context.liveDir, context.srcLink, context.stateFile) ??
-    activeSourceFrom(context.legacyLiveDir, context.legacySrcLink, context.legacyStateFile)
-  );
+  return activeSourceFrom(context.liveDir, context.srcLink, context.stateFile);
 }
 
 function activeSourceFrom(liveDir: string, srcLink: string, stateFile: string): string | null {
