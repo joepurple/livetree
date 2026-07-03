@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import type { ChildProcess, SpawnSyncReturns } from "node:child_process";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -56,6 +57,7 @@ const usage = `Usage:
   treeswitch
   treeswitch <selector>
   treeswitch init
+  treeswitch run [--static] <script-name>
   treeswitch rm
   treeswitch remove
   treeswitch delete
@@ -81,6 +83,11 @@ async function main(): Promise<void> {
     }
 
     await initWorktree(context);
+    return;
+  }
+
+  if (args[0] === "run") {
+    await runConfiguredScript(context, args.slice(1));
     return;
   }
 
@@ -364,6 +371,12 @@ function switchSource(context: ProjectContext, target: WorktreeChoice): void {
 
 async function initWorktree(context: ProjectContext): Promise<void> {
   const config = readTswConfig(context);
+  if (!config.initScript) {
+    throw new CliError(
+      `.tswconf must define an init script.\n\nSupported examples:\ninit:\n  copy:\n    - modules/api/.env\n  script: pnpm install\n\ninit:\n  script: |\n    corepack enable\n    pnpm install`,
+    );
+  }
+
   const target = await selectInitWorktree(context);
   console.log(`Using init config: ${config.configPath}`);
   copyInitFiles(context, target, config.copyFiles);
@@ -371,9 +384,20 @@ async function initWorktree(context: ProjectContext): Promise<void> {
 }
 
 type TswConfig = {
-  initScript: string;
+  initScript: string | null;
   copyFiles: string[];
+  runScripts: Record<string, string>;
   configPath: string;
+};
+
+type RunOptions = {
+  scriptName: string | null;
+  staticMode: boolean;
+};
+
+type LiveSourceSnapshot = {
+  source: string;
+  key: string;
 };
 
 type CreatedWorktreeChoice = {
@@ -571,23 +595,368 @@ function copyInitFiles(context: ProjectContext, target: WorktreeChoice, copyFile
   }
 }
 
+async function runConfiguredScript(context: ProjectContext, args: string[]): Promise<void> {
+  const options = parseRunArgs(args);
+  const config = readTswConfig(context);
+
+  if (!options.scriptName) {
+    throw new CliError(`Usage: treeswitch run [--static] <script-name>${formatAvailableRunScripts(config)}`);
+  }
+
+  const script = config.runScripts[options.scriptName];
+  if (!script) {
+    throw new CliError(`No run script named '${options.scriptName}' in ${config.configPath}.${formatAvailableRunScripts(config)}`);
+  }
+
+  if (options.staticMode) {
+    runScriptOnce(context, options.scriptName, script);
+    return;
+  }
+
+  await runWatchedScript(context, options.scriptName, script);
+}
+
+function parseRunArgs(args: string[]): RunOptions {
+  let staticMode = false;
+  const positional: string[] = [];
+
+  for (const arg of args) {
+    if (arg === "--static") {
+      staticMode = true;
+      continue;
+    }
+
+    if (arg.startsWith("-")) {
+      throw new CliError(`Unknown run option: ${arg}\n\nUsage: treeswitch run [--static] <script-name>`);
+    }
+
+    positional.push(arg);
+  }
+
+  if (positional.length > 1) {
+    throw new CliError("Usage: treeswitch run [--static] <script-name>");
+  }
+
+  return {
+    scriptName: positional[0] ?? null,
+    staticMode,
+  };
+}
+
+function formatAvailableRunScripts(config: TswConfig): string {
+  const names = Object.keys(config.runScripts).sort();
+  if (names.length === 0) {
+    return `\n\nNo run scripts are defined in ${config.configPath}. Add one like:\nrun:\n  web: cd src/modules/web && pnpm start`;
+  }
+
+  return `\n\nAvailable run scripts:\n${names.map((name) => `  ${name}`).join("\n")}`;
+}
+
+function runScriptOnce(context: ProjectContext, scriptName: string, script: string): void {
+  const snapshot = requireRunnableLiveSource(context);
+  const result = spawnSync(script, {
+    cwd: context.liveDir,
+    env: runScriptEnv(context, scriptName, snapshot.source),
+    shell: true,
+    stdio: "inherit",
+  });
+
+  assertRunResult(result, scriptName);
+}
+
+async function runWatchedScript(context: ProjectContext, scriptName: string, script: string): Promise<void> {
+  mkdirSync(context.liveDir, { recursive: true });
+  let current = requireRunnableLiveSource(context);
+  let child: ChildProcess | null = null;
+  let stoppingChild: ChildProcess | null = null;
+  let restarting = false;
+  let shuttingDown = false;
+  let missingLogged = false;
+  let poll: NodeJS.Timeout | null = null;
+
+  console.error(`tsw run ${scriptName}: watching ${context.srcLink}`);
+
+  const start = (snapshot: LiveSourceSnapshot): void => {
+    current = snapshot;
+    missingLogged = false;
+    console.error(`tsw run ${scriptName}: starting for ${snapshot.source}`);
+    const startedChild = spawn(script, {
+      cwd: context.liveDir,
+      env: runScriptEnv(context, scriptName, snapshot.source),
+      shell: true,
+      stdio: "inherit",
+    });
+    child = startedChild;
+
+    startedChild.on("error", (error) => {
+      if (!shuttingDown) {
+        cleanup();
+        rejectRun(new CliError(`Run script '${scriptName}' failed to start: ${error.message}`));
+      }
+    });
+
+    startedChild.on("exit", (code, signal) => {
+      if (startedChild === stoppingChild || startedChild !== child || restarting || shuttingDown) {
+        return;
+      }
+
+      cleanup();
+      if (signal) {
+        rejectRun(new CliError(signal === "SIGINT" ? "Canceled." : `Run script '${scriptName}' terminated by signal ${signal}.`, signalExitCode(signal)));
+        return;
+      }
+
+      if (code && code !== 0) {
+        rejectRun(new CliError(`Run script '${scriptName}' exited with status ${code}.`, code));
+        return;
+      }
+
+      resolveRun();
+    });
+  };
+
+  let resolveRun: () => void = () => undefined;
+  let rejectRun: (error: CliError) => void = () => undefined;
+
+  const cleanup = (): void => {
+    if (poll) {
+      clearInterval(poll);
+      poll = null;
+    }
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
+
+  const restart = async (next: LiveSourceSnapshot | null): Promise<void> => {
+    if (restarting || shuttingDown) {
+      return;
+    }
+
+    restarting = true;
+    const previous = child;
+    child = null;
+
+    if (previous) {
+      stoppingChild = previous;
+      stopChildProcess(previous, "SIGTERM");
+      await waitForChildToExit(previous, 5000);
+      stoppingChild = null;
+    }
+
+    restarting = false;
+
+    if (shuttingDown) {
+      return;
+    }
+
+    if (next) {
+      start(next);
+      return;
+    }
+
+    if (!missingLogged) {
+      console.error(`tsw run ${scriptName}: waiting for ${context.srcLink}`);
+      missingLogged = true;
+    }
+  };
+
+  const checkForChange = (): void => {
+    let next: LiveSourceSnapshot | null;
+    try {
+      next = readRunnableLiveSource(context);
+    } catch (error) {
+      cleanup();
+      rejectRun(error instanceof CliError ? error : new CliError(error instanceof Error ? error.message : String(error)));
+      return;
+    }
+
+    if (!next) {
+      void restart(null);
+      return;
+    }
+
+    if (!child || next.key !== current.key) {
+      console.error(`tsw run ${scriptName}: live tree changed`);
+      void restart(next);
+    }
+  };
+
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) {
+      return;
+    }
+
+    shuttingDown = true;
+    cleanup();
+    const previous = child;
+    child = null;
+    if (previous) {
+      stopChildProcess(previous, signal);
+      await waitForChildToExit(previous, 5000);
+    }
+
+    rejectRun(new CliError(signal === "SIGINT" ? "Canceled." : `Run script '${scriptName}' terminated by signal ${signal}.`, signalExitCode(signal)));
+  };
+
+  const onSigint = (): void => {
+    void shutdown("SIGINT");
+  };
+
+  const onSigterm = (): void => {
+    void shutdown("SIGTERM");
+  };
+
+  return new Promise((resolve, reject) => {
+    resolveRun = resolve;
+    rejectRun = reject;
+    process.on("SIGINT", onSigint);
+    process.on("SIGTERM", onSigterm);
+    start(current);
+    poll = setInterval(checkForChange, 1000);
+  });
+}
+
+function runScriptEnv(context: ProjectContext, scriptName: string, activeSourcePath: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    TSW_ACTIVE_WORKTREE: activeSourcePath,
+    TSW_LIVE_DIR: context.liveDir,
+    TSW_LIVE_SRC: context.srcLink,
+    TSW_PROJECT_ROOT: context.mainRoot,
+    TSW_SCRIPT: scriptName,
+  };
+}
+
+function assertRunResult(result: SpawnSyncReturns<Buffer>, scriptName: string): void {
+  if (result.error) {
+    throw new CliError(`Run script '${scriptName}' failed to start: ${result.error.message}`);
+  }
+
+  if (result.signal) {
+    throw new CliError(result.signal === "SIGINT" ? "Canceled." : `Run script '${scriptName}' terminated by signal ${result.signal}.`, signalExitCode(result.signal));
+  }
+
+  if (result.status && result.status !== 0) {
+    throw new CliError(`Run script '${scriptName}' exited with status ${result.status}.`, result.status);
+  }
+}
+
+function requireRunnableLiveSource(context: ProjectContext): LiveSourceSnapshot {
+  const snapshot = readRunnableLiveSource(context);
+  if (!snapshot) {
+    throw new CliError(`No active .live-tree/src target. Run 'tsw' to select a worktree first.`);
+  }
+
+  return snapshot;
+}
+
+function readRunnableLiveSource(context: ProjectContext): LiveSourceSnapshot | null {
+  if (existsSync(context.srcLink) && !lstatSync(context.srcLink).isSymbolicLink()) {
+    throw new CliError(`Refusing to run with non-symlink path: ${context.srcLink}`);
+  }
+
+  if (!isDanglingSymlink(context.srcLink) && !existsSync(context.srcLink)) {
+    return null;
+  }
+
+  const source = activeSourceFrom(context.liveDir, context.srcLink, context.stateFile);
+  if (!source || !existsSync(source)) {
+    return null;
+  }
+
+  return {
+    source,
+    key: normalizePath(source),
+  };
+}
+
+function stopChildProcess(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid) {
+    return;
+  }
+
+  stopProcessTree(child.pid, signal);
+}
+
+function stopProcessTree(pid: number, signal: NodeJS.Signals): void {
+  for (const childPid of childProcessIds(pid)) {
+    stopProcessTree(childPid, signal);
+  }
+
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // The process already exited.
+  }
+}
+
+function childProcessIds(pid: number): number[] {
+  if (process.platform === "win32") {
+    return [];
+  }
+
+  try {
+    const output = execFileSync("pgrep", ["-P", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+
+    if (!output) {
+      return [];
+    }
+
+    return output
+      .split(/\s+/)
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isInteger(value) && value > 0);
+  } catch {
+    return [];
+  }
+}
+
+function waitForChildToExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      stopChildProcess(child, "SIGKILL");
+    }, timeoutMs);
+    const giveUp = setTimeout(resolve, timeoutMs + 1000);
+
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      clearTimeout(giveUp);
+      resolve();
+    });
+  });
+}
+
+function signalExitCode(signal: NodeJS.Signals): number {
+  if (signal === "SIGINT") {
+    return 130;
+  }
+
+  if (signal === "SIGTERM") {
+    return 143;
+  }
+
+  return 1;
+}
+
 function readTswConfig(context: ProjectContext): TswConfig {
   const configPath = path.join(context.mainRoot, ".tswconf");
   if (!existsSync(configPath)) {
-    throw new CliError(`No .tswconf found at ${configPath}.\n\nAdd one like:\ninit:\n  script: pnpm install`);
+    throw new CliError(`No .tswconf found at ${configPath}.\n\nAdd one like:\ninit:\n  script: pnpm install\nrun:\n  web: cd src/modules/web && pnpm start`);
   }
 
   const config = parseTswConfig(readFileSync(configPath, "utf8"));
-  if (!config.initScript) {
-    throw new CliError(
-      `.tswconf must define an init script.\n\nSupported examples:\ninit:\n  copy:\n    - modules/api/.env\n  script: pnpm install\n\ninit:\n  script: |\n    corepack enable\n    pnpm install`,
-    );
-  }
-
   return {
     configPath,
     initScript: config.initScript,
     copyFiles: normalizeCopyFilePaths(config.copyFiles),
+    runScripts: normalizeRunScripts(config.runScripts),
   };
 }
 
@@ -600,12 +969,14 @@ type YamlKeyLine = {
 type ParsedTswConfig = {
   initScript: string | null;
   copyFiles: string[];
+  runScripts: Record<string, string>;
 };
 
 function parseTswConfig(source: string): ParsedTswConfig {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   let initScript: string | null = null;
   let copyFiles: string[] = [];
+  let runScripts: Record<string, string> = {};
 
   for (let index = 0; index < lines.length; index += 1) {
     const parsed = parseYamlKeyLine(lines[index]!);
@@ -632,12 +1003,18 @@ function parseTswConfig(source: string): ParsedTswConfig {
 
     if (parsed.key === "scripts") {
       initScript = nestedYamlValue(lines, index, parsed.indent, ["init"]);
+      continue;
+    }
+
+    if (parsed.key === "run") {
+      runScripts = nestedYamlMapValues(lines, index, parsed.indent);
     }
   }
 
   return {
     initScript,
     copyFiles,
+    runScripts,
   };
 }
 
@@ -677,6 +1054,34 @@ function nestedYamlList(lines: string[], parentIndex: number, parentIndent: numb
   }
 
   return [];
+}
+
+function nestedYamlMapValues(lines: string[], parentIndex: number, parentIndent: number): Record<string, string> {
+  const values: Record<string, string> = {};
+  let childIndent: number | null = null;
+
+  for (let index = parentIndex + 1; index < lines.length; index += 1) {
+    const parsed = parseYamlKeyLine(lines[index]!);
+    if (!parsed) {
+      continue;
+    }
+
+    if (parsed.indent <= parentIndent) {
+      break;
+    }
+
+    childIndent ??= parsed.indent;
+    if (parsed.indent !== childIndent) {
+      continue;
+    }
+
+    const value = yamlValue(lines, index, parsed);
+    if (value) {
+      values[parsed.key] = value;
+    }
+  }
+
+  return values;
 }
 
 function yamlValue(lines: string[], index: number, parsed: YamlKeyLine): string | null {
@@ -737,6 +1142,26 @@ function normalizeCopyFilePaths(paths: string[]): string[] {
 
     return normalized;
   });
+}
+
+function normalizeRunScripts(scripts: Record<string, string>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+
+  for (const [name, script] of Object.entries(scripts)) {
+    const trimmedName = name.trim();
+    const trimmedScript = script.trim();
+    if (!trimmedName || !/^[A-Za-z0-9_-]+$/.test(trimmedName)) {
+      throw new CliError(`Run script names must use letters, numbers, underscores, or hyphens: ${name}`);
+    }
+
+    if (!trimmedScript) {
+      throw new CliError(`Run script '${trimmedName}' must not be empty.`);
+    }
+
+    normalized[trimmedName] = trimmedScript;
+  }
+
+  return normalized;
 }
 
 function readYamlBlock(lines: string[], parentIndex: number, parentIndent: number): string {

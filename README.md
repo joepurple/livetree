@@ -12,6 +12,8 @@ Run it from any worktree that belongs to the project.
 treeswitch
 treeswitch <selector>
 treeswitch init
+treeswitch run <script-name>
+treeswitch run --static <script-name>
 treeswitch rm
 ```
 
@@ -43,6 +45,21 @@ init:
 ```
 
 The shorthand forms `init: pnpm install`, `initScript: pnpm install`, and `scripts:` with an indented `init:` value are also supported.
+
+Define reusable live-tree commands under `run`:
+
+```yaml
+run:
+  api: cd src/modules/api && pnpm start
+  web: cd src/modules/web && pnpm start
+  mobile: cd src/modules/mobile && pnpm start
+```
+
+Run them with `treeswitch run api` or `tsw run api`. Run scripts start in `<main-worktree>/.live-tree`, so paths should go through `src/...`. By default, `treeswitch` watches `.live-tree/src`; when you switch the active worktree, it stops the current process tree and starts the script again against the new target. Add `--static` to run once without watching or restarting:
+
+```sh
+tsw run --static web
+```
 
 Use `treeswitch rm`, `treeswitch remove`, or `treeswitch delete` to select linked worktrees to remove. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `treeswitch` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `treeswitch` prunes the stale Git metadata and asks before deleting the leftover directory.
 
