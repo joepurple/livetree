@@ -21,7 +21,7 @@ livetree rm
 
 `lt` is installed as a shorthand for the same command.
 
-With no selector, `livetree` opens a small picker. With a selector, it matches a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
+With no selector, `livetree` opens a searchable picker. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to choose, and Esc to clear or cancel. With a selector, it matches a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
 
 Use `livetree list` or `lt ls` to print worktrees newest-modified first:
 
@@ -80,7 +80,7 @@ Any extra arguments after the script name are passed through to the configured c
 lt run lt init
 ```
 
-Use `livetree rm`, `livetree remove`, or `livetree delete` to select linked worktrees to remove. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `livetree` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `livetree` prunes the stale Git metadata and asks before deleting the leftover directory.
+Use `livetree rm`, `livetree remove`, or `livetree delete` to select linked worktrees to remove in the same searchable picker. Tab or Space toggles the highlighted worktree. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `livetree` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `livetree` prunes the stale Git metadata and asks before deleting the leftover directory.
 
 Install locally while developing:
 
