@@ -25,7 +25,7 @@ lt watch: <shell-command> [args...]
 lt rm
 ```
 
-With no arguments, `lt` opens a searchable picker. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to choose, and Esc to clear or cancel. To switch directly, use `lt switch <selector>` or `lt use <selector>`. Selectors match a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
+With no arguments, `lt` opens the fullscreen searchable switcher. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to switch to the highlighted worktree, Esc to clear the search box, and Ctrl-C to exit. To switch directly, use `lt switch <selector>` or `lt use <selector>`. Selectors match a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
 
 Use `lt switcher` to open the same searchable switcher as a fullscreen UI. Enter switches to the highlighted worktree and leaves the UI open for the next switch; Esc clears the search box, and Ctrl-C exits. Add a query to prefill the search box:
 

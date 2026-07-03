@@ -103,8 +103,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const target = await selectWorktree(context);
-  switchSource(context, target);
+  await openWorktreeSwitcher(context);
 }
 
 main().catch((error: unknown) => {
