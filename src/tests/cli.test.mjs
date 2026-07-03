@@ -6,6 +6,7 @@ import { cliPath, tempDir } from "./helpers.mjs";
 test("CLI prints help without requiring a git worktree", () => {
   const output = execFileSync(process.execPath, [cliPath, "--help"], { encoding: "utf8" });
   assert.match(output, /Usage:/);
+  assert.match(output, /lt switcher/);
   assert.match(output, /lt watch:/);
 });
 

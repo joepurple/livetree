@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { resolveSelector, selectWorktree, switchSource } from "../../../dist/commands/switch.js";
-import { FakeTTYStdin, makeChoice, makeContext, tempDir, wait, withMutedTerminal, withProperty } from "../../tests/helpers.mjs";
+import { openWorktreeSwitcher, resolveSelector, selectWorktree, switchSource } from "../../../dist/commands/switch.js";
+import { FakeTTYStdin, captureConsole, makeChoice, makeContext, tempDir, wait, withMutedTerminal, withProperty } from "../../tests/helpers.mjs";
 
 test("resolves selectors by path, branch, hash, basename, title, and thread", (t) => {
   const root = tempDir("switch-root", t);
@@ -61,6 +61,65 @@ test("selectWorktree returns the interactive selection", async (t) => {
   );
 
   assert.equal(selected.label, "Second");
+});
+
+test("openWorktreeSwitcher switches on enter and stays open until ctrl-c", async (t) => {
+  const root = tempDir("switcher-interactive", t);
+  const first = makeChoice({ path: path.join(root, "first"), label: "First" });
+  const second = makeChoice({ path: path.join(root, "second"), label: "Second" });
+  mkdirSync(first.path);
+  mkdirSync(second.path);
+  const context = makeContext(root, [first, second]);
+  const input = new FakeTTYStdin();
+  let settled = false;
+
+  const { logs } = await captureConsole(async () =>
+    withProperty(process, "stdin", input, async () =>
+      withProperty(process.stderr, "isTTY", true, async () =>
+        withMutedTerminal(async () => {
+          const promise = openWorktreeSwitcher(context);
+          promise.then(
+            () => {
+              settled = true;
+            },
+            () => {
+              settled = true;
+            },
+          );
+
+          await wait(0);
+          input.emit("keypress", "x", { name: "x" });
+          input.emit("keypress", "", { name: "escape" });
+          await wait(0);
+          assert.equal(settled, false);
+
+          input.emit("keypress", "s", { name: "s" });
+          input.emit("keypress", "e", { name: "e" });
+          input.emit("keypress", "c", { name: "c" });
+          input.emit("keypress", "\r", { name: "return" });
+          await wait(0);
+
+          assert.equal(readlinkSync(context.srcLink), second.path);
+          assert.equal(readFileSync(context.stateFile, "utf8"), `${second.path}\n`);
+          assert.equal(settled, false);
+
+          input.emit("keypress", "\u0003", { ctrl: true, name: "c" });
+          await promise;
+        }),
+      ),
+    ),
+  );
+
+  assert.deepEqual(logs, []);
+});
+
+test("openWorktreeSwitcher requires an interactive terminal", async (t) => {
+  const root = tempDir("switcher-non-interactive", t);
+  const choice = makeChoice({ path: root, label: "Root", isMain: true });
+
+  await withProperty(process.stdin, "isTTY", false, async () => {
+    await assert.rejects(openWorktreeSwitcher(makeContext(root, [choice])), /Open the switcher from an interactive terminal/);
+  });
 });
 
 test("switchSource writes the live symlink and state file", (t) => {

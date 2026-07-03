@@ -4,8 +4,12 @@ import { CliError } from "../errors.js";
 import { isDanglingSymlink, normalizePath, resolveExistingPath, samePath } from "../path-utils.js";
 import { activeSource } from "../source.js";
 import type { ProjectContext, WorktreeChoice } from "../types.js";
-import { formatChoiceList, formatNumberedChoiceList, selectFromInteractiveWorktreeList } from "../ui.js";
+import { formatChoiceList, formatNumberedChoiceList, runInteractiveWorktreeSwitcher, selectFromInteractiveWorktreeList } from "../ui.js";
 import { worktreeListItemsModifiedNewestFirst } from "../worktrees.js";
+
+type SwitchSourceOptions = {
+  quiet?: boolean;
+};
 
 export function resolveSelector(context: ProjectContext, selector: string): WorktreeChoice {
   const directPath = resolveExistingPath(selector, context.cwd);
@@ -59,7 +63,24 @@ export async function selectWorktree(context: ProjectContext): Promise<WorktreeC
   return selected;
 }
 
-export function switchSource(context: ProjectContext, target: WorktreeChoice): void {
+export async function openWorktreeSwitcher(context: ProjectContext, initialQuery = ""): Promise<void> {
+  const active = activeSource(context);
+
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new CliError(`Open the switcher from an interactive terminal:\n${formatNumberedChoiceList(context.choices, active)}`);
+  }
+
+  await runInteractiveWorktreeSwitcher({
+    active,
+    initialQuery,
+    items: worktreeListItemsModifiedNewestFirst(context.choices),
+    onSelect: (target) => {
+      switchSource(context, target, { quiet: true });
+    },
+  });
+}
+
+export function switchSource(context: ProjectContext, target: WorktreeChoice, options: SwitchSourceOptions = {}): void {
   mkdirSync(context.liveDir, { recursive: true });
 
   if (existsSync(context.srcLink) && !lstatSync(context.srcLink).isSymbolicLink()) {
@@ -72,6 +93,9 @@ export function switchSource(context: ProjectContext, target: WorktreeChoice): v
 
   symlinkSync(target.path, context.srcLink, "dir");
   writeFileSync(context.stateFile, `${target.path}\n`, "utf8");
-  console.log(`.livetree/src -> ${target.path}`);
-  console.log(`Active: ${target.label}`);
+
+  if (!options.quiet) {
+    console.log(`.livetree/src -> ${target.path}`);
+    console.log(`Active: ${target.label}`);
+  }
 }

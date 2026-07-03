@@ -5,7 +5,7 @@ import { listWorktrees } from "./commands/list.js";
 import { removeWorktrees } from "./commands/remove.js";
 import { runConfiguredScript } from "./commands/run.js";
 import { runShellCommand, watchShellCommand } from "./commands/shell.js";
-import { resolveSelector, selectWorktree, switchSource } from "./commands/switch.js";
+import { openWorktreeSwitcher, resolveSelector, selectWorktree, switchSource } from "./commands/switch.js";
 import { CliError } from "./errors.js";
 import { buildProjectContext } from "./worktrees.js";
 
@@ -13,6 +13,7 @@ const usage = `Usage:
   lt
   lt use [selector]
   lt switch [selector]
+  lt switcher [query]
   lt <script-name> [args...]
   lt list [query]
   lt ls [query]
@@ -80,6 +81,11 @@ async function main(): Promise<void> {
     const selector = args.slice(1).join(" ").trim();
     const target = selector ? resolveSelector(context, selector) : await selectWorktree(context);
     switchSource(context, target);
+    return;
+  }
+
+  if (args[0] === "switcher") {
+    await openWorktreeSwitcher(context, args.slice(1).join(" "));
     return;
   }
 

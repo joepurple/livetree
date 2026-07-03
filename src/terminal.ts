@@ -37,6 +37,23 @@ export function writeInlineBlock(lines: string[], previousLineCount: number): vo
   }
 }
 
+export function enterAlternateScreen(): void {
+  process.stderr.write("\x1b[?1049h\x1b[?25l");
+}
+
+export function leaveAlternateScreen(): void {
+  process.stderr.write("\x1b[?25h\x1b[?1049l");
+}
+
+export function writeFullscreenBlock(lines: string[]): void {
+  readline.cursorTo(process.stderr, 0, 0);
+  readline.clearScreenDown(process.stderr);
+
+  for (const line of lines) {
+    process.stderr.write(`${line}\n`);
+  }
+}
+
 export function formatRelativeAge(modifiedAtMs: number): string {
   if (!Number.isFinite(modifiedAtMs)) {
     return "?";
