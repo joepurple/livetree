@@ -2,6 +2,7 @@
 
 import { initWorktree } from "./commands/init.js";
 import { listWorktrees } from "./commands/list.js";
+import { goToWorktree } from "./commands/go.js";
 import { removeWorktrees } from "./commands/remove.js";
 import { runConfiguredScript } from "./commands/run.js";
 import { runShellCommand, watchShellCommand } from "./commands/shell.js";
@@ -17,6 +18,7 @@ const usage = `Usage:
   lt <script-name> [args...]
   lt list [query]
   lt ls [query]
+  lt go [query]
   lt init
   lt run <script-name> [args...]
   lt watch <script-name> [args...]
@@ -54,6 +56,11 @@ async function main(): Promise<void> {
 
   if (["list", "ls"].includes(args[0] ?? "")) {
     await listWorktrees(context, args.slice(1).join(" "));
+    return;
+  }
+
+  if (args[0] === "go") {
+    await goToWorktree(context, args.slice(1).join(" "));
     return;
   }
 

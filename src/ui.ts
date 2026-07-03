@@ -55,6 +55,7 @@ type InteractiveWorktreeBrowserRenderOptions = {
   items: WorktreeListItem[];
   query: string;
   scrollOffset: number;
+  selectedIndex?: number;
 };
 
 type InteractiveWorktreeSwitcherRenderOptions = {
@@ -204,6 +205,161 @@ export function browseInteractiveWorktreeList(options: InteractiveWorktreeBrowse
       if (typed !== null) {
         query += typed;
         resetQueryScroll();
+      }
+    };
+
+    readline.emitKeypressEvents(stdin);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("keypress", onKeypress);
+    render();
+  });
+}
+
+export function selectFromInteractiveWorktreeBrowser(options: InteractiveWorktreeBrowserOptions): Promise<WorktreeChoice> {
+  const { active, initialQuery = "", items } = options;
+  let query = initialQuery.trim();
+  let selectedIndex = query ? 0 : Math.max(0, items.findIndex((item) => active && samePath(item.choice.path, active)));
+  const ageWidth = ageColumnWidth(items);
+
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    let renderedLines = 0;
+
+    const cleanup = (): void => {
+      stdin.off("keypress", onKeypress);
+      if (stdin.isTTY) {
+        stdin.setRawMode(false);
+      }
+      stdin.pause();
+    };
+
+    const filteredItems = (): WorktreeListItem[] => filterWorktreeListItems(items, query);
+
+    const clampSelection = (filteredLength: number): void => {
+      if (filteredLength === 0) {
+        selectedIndex = 0;
+      } else if (selectedIndex >= filteredLength) {
+        selectedIndex = filteredLength - 1;
+      } else if (selectedIndex < 0) {
+        selectedIndex = 0;
+      }
+    };
+
+    const render = (): void => {
+      const filtered = filteredItems();
+      clampSelection(filtered.length);
+      const lines = formatInteractiveWorktreeBrowser({
+        active,
+        ageWidth,
+        filtered,
+        items,
+        query,
+        scrollOffset: selectedIndex,
+        selectedIndex,
+      });
+
+      writeInlineBlock(lines, renderedLines);
+      renderedLines = lines.length;
+    };
+
+    const finish = (): void => {
+      const filtered = filteredItems();
+      clampSelection(filtered.length);
+      const item = filtered[selectedIndex];
+      if (!item) {
+        render();
+        return;
+      }
+
+      cleanup();
+      resolve(item.choice);
+    };
+
+    const cancel = (): void => {
+      cleanup();
+      process.stderr.write("Canceled.\n");
+      reject(new CliError("Canceled."));
+    };
+
+    const moveSelection = (delta: number): void => {
+      const filtered = filteredItems();
+      if (filtered.length === 0) {
+        render();
+        return;
+      }
+
+      selectedIndex = (selectedIndex + delta + filtered.length) % filtered.length;
+      render();
+    };
+
+    const pageSelection = (direction: -1 | 1): void => {
+      const filtered = filteredItems();
+      const visibleCount = visibleWorktreeBrowserItemCount(filtered.length);
+      selectedIndex += direction * visibleCount;
+      render();
+    };
+
+    const resetQuerySelection = (): void => {
+      selectedIndex = 0;
+      render();
+    };
+
+    const onKeypress = (value: string, key: readline.Key): void => {
+      if (key.ctrl && key.name === "c") {
+        cancel();
+        return;
+      }
+
+      switch (key.name ?? value) {
+        case "return":
+        case "enter":
+          finish();
+          return;
+        case "escape":
+          if (query.length > 0) {
+            query = "";
+            resetQuerySelection();
+          } else {
+            cancel();
+          }
+          return;
+        case "backspace":
+          if (query.length > 0) {
+            query = dropLastCharacter(query);
+            resetQuerySelection();
+          }
+          return;
+        case "up":
+          moveSelection(-1);
+          return;
+        case "down":
+          moveSelection(1);
+          return;
+        case "pageup":
+          pageSelection(-1);
+          return;
+        case "pagedown":
+          pageSelection(1);
+          return;
+        case "home":
+          selectedIndex = 0;
+          render();
+          return;
+        case "end": {
+          const filtered = filteredItems();
+          selectedIndex = filtered.length - 1;
+          render();
+          return;
+        }
+        default:
+          break;
+      }
+
+      const typed = printableKeypressValue(value, key);
+      if (typed !== null) {
+        query += typed;
+        resetQuerySelection();
       }
     };
 
@@ -623,7 +779,7 @@ function formatInteractiveWorktreeList(options: InteractiveWorktreeListRenderOpt
 }
 
 function formatInteractiveWorktreeBrowser(options: InteractiveWorktreeBrowserRenderOptions): string[] {
-  const { active, ageWidth, filtered, items, query, scrollOffset } = options;
+  const { active, ageWidth, filtered, items, query, scrollOffset, selectedIndex } = options;
   const visibleCount = Math.min(visibleWorktreeBrowserItemCount(filtered.length), filtered.length);
   const lines = [formatBrowseSearchBox(query, filtered.length, items.length, scrollOffset, visibleCount)];
 
@@ -635,8 +791,11 @@ function formatInteractiveWorktreeBrowser(options: InteractiveWorktreeBrowserRen
   const [start, end] = visibleWorktreeBrowserRange(filtered.length, scrollOffset);
   for (let index = start; index < end; index += 1) {
     const item = filtered[index]!;
-    lines.push(`  ${formatWorktreeListRow(item, active, ageWidth)}`);
-    lines.push(`    ${dim(item.choice.path, process.stderr)}`);
+    const selected = index === selectedIndex;
+    const row = `${selected ? "> " : "  "}${formatWorktreeListRow(item, active, ageWidth)}`;
+    const pathRow = `    ${dim(item.choice.path, process.stderr)}`;
+    lines.push(selected ? reverse(row) : row);
+    lines.push(selected ? reverse(pathRow) : pathRow);
   }
 
   return lines;

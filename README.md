@@ -16,6 +16,7 @@ lt switcher [query]
 lt <script-name> [args...]
 lt list [query]
 lt ls [query]
+lt go [query]
 lt init
 lt run <script-name> [args...]
 lt watch <script-name> [args...]
@@ -41,6 +42,8 @@ Use `lt list` or `lt ls` to browse worktrees in a searchable list UI without sel
 1h     ROOT [mobile-dev]
     /Users/avinoam/code/ecosconnect
 ```
+
+Use `lt go` to open the same searchable list, select a worktree, and copy a ready-to-paste `cd <worktree>` command to the macOS pasteboard. `lt go api` pre-fills the search; in non-interactive use, it copies the command when the query matches exactly one worktree.
 
 Use `lt init` to initialize every worktree that has not been initialized yet. A worktree is considered initialized when `<worktree>/.livetree` exists. For each uninitialized worktree, `lt` copies any configured files from the main worktree, runs the project init script in that worktree, then writes `<worktree>/.livetree/.source` as the initialization marker. Define init behavior in `.ltconf` at the main worktree root:
 

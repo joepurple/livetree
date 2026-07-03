@@ -8,6 +8,7 @@ import {
   formatNumberedChoiceList,
   formatWorktreeListRow,
   printWorktreeList,
+  selectFromInteractiveWorktreeBrowser,
   selectFromInteractiveWorktreeList,
 } from "../../dist/ui.js";
 import { FakeTTYStdin, captureConsole, makeChoice, wait, withMutedTerminal, withProperty } from "./helpers.mjs";
@@ -108,4 +109,22 @@ test("browseInteractiveWorktreeList handles scrolling, query editing, and exit",
       await promise;
     }),
   );
+});
+
+test("selectFromInteractiveWorktreeBrowser returns the highlighted row", async () => {
+  const input = new FakeTTYStdin();
+  const api = item("API work", "api server");
+  const web = item("Web work", "web client");
+
+  const selected = await withProperty(process, "stdin", input, async () =>
+    withMutedTerminal(async () => {
+      const promise = selectFromInteractiveWorktreeBrowser({ active: null, items: [api, web] });
+      await wait(0);
+      input.emit("keypress", "", { name: "down" });
+      input.emit("keypress", "\r", { name: "return" });
+      return promise;
+    }),
+  );
+
+  assert.equal(selected.label, "Web work");
 });
