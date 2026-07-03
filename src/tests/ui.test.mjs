@@ -8,6 +8,7 @@ import {
   formatNumberedChoiceList,
   formatWorktreeListRow,
   printWorktreeList,
+  runInteractiveWorktreeSwitcher,
   selectFromInteractiveWorktreeBrowser,
   selectFromInteractiveWorktreeList,
 } from "../../dist/ui.js";
@@ -59,7 +60,7 @@ test("prints non-interactive worktree lists", async () => {
   assert.throws(() => printWorktreeList([], null, "missing"), /No worktrees matched 'missing'/);
 });
 
-test("selectFromInteractiveWorktreeList handles search, selection, and multi-select", async () => {
+test("selectFromInteractiveWorktreeList handles selection and multi-select without search", async () => {
   const api = item("API work", "api server");
   const web = item("Web work", "web client");
 
@@ -73,7 +74,7 @@ test("selectFromInteractiveWorktreeList handles search, selection, and multi-sel
       return promise;
     }),
   );
-  assert.deepEqual(selected.map((choice) => choice.label), ["Web work"]);
+  assert.deepEqual(selected.map((choice) => choice.label), ["API work"]);
 
   const multiInput = new FakeTTYStdin();
   const checked = await withProperty(process, "stdin", multiInput, async () =>
@@ -90,7 +91,7 @@ test("selectFromInteractiveWorktreeList handles search, selection, and multi-sel
   assert.deepEqual(checked.map((choice) => choice.label), ["API work", "Web work"]);
 });
 
-test("browseInteractiveWorktreeList handles scrolling, query editing, and exit", async () => {
+test("browseInteractiveWorktreeList handles scrolling and exit without search", async () => {
   const input = new FakeTTYStdin();
   const items = [item("API work", "api server"), item("Web work", "web client"), item("Docs work", "docs")];
 
@@ -127,4 +128,44 @@ test("selectFromInteractiveWorktreeBrowser returns the highlighted row", async (
   );
 
   assert.equal(selected.label, "Web work");
+});
+
+test("runInteractiveWorktreeSwitcher refreshes items while preserving search", async () => {
+  const input = new FakeTTYStdin();
+  const api = item("API work", "api server");
+  const web = item("Web work", "web client");
+  const selected = [];
+  let refresh;
+  let cleanedUp = false;
+
+  await withProperty(process, "stdin", input, async () =>
+    withMutedTerminal(async () => {
+      const promise = runInteractiveWorktreeSwitcher({
+        active: null,
+        items: [api],
+        onRefresh: (callback) => {
+          refresh = callback;
+          return () => {
+            cleanedUp = true;
+          };
+        },
+        onSelect: (choice) => {
+          selected.push(choice.label);
+        },
+      });
+
+      await wait(0);
+      assert.equal(typeof refresh, "function");
+      input.emit("keypress", "w", { name: "w" });
+      refresh({ active: null, items: [api, web] });
+      await wait(0);
+      input.emit("keypress", "\r", { name: "return" });
+      await wait(0);
+      input.emit("keypress", "\u0003", { ctrl: true, name: "c" });
+      await promise;
+    }),
+  );
+
+  assert.deepEqual(selected, ["Web work"]);
+  assert.equal(cleanedUp, true);
 });

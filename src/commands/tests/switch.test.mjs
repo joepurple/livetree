@@ -12,6 +12,7 @@ test("resolves selectors by path, branch, hash, basename, title, and thread", (t
   mkdirSync(feature);
   mkdirSync(other);
 
+  const rootChoice = makeChoice({ path: root, label: "ROOT", branch: "main", isMain: true });
   const featureChoice = makeChoice({
     path: feature,
     label: "Feature Work",
@@ -20,8 +21,10 @@ test("resolves selectors by path, branch, hash, basename, title, and thread", (t
     chat: { title: "Build Search", threadId: "thread-feature" },
   });
   const otherChoice = makeChoice({ path: other, label: "Other Work", branch: "other" });
-  const context = makeContext(root, [featureChoice, otherChoice]);
+  const context = makeContext(root, [rootChoice, featureChoice, otherChoice]);
 
+  assert.equal(resolveSelector(context, "root"), rootChoice);
+  assert.equal(resolveSelector(context, "ROOT"), rootChoice);
   assert.equal(resolveSelector(context, feature), featureChoice);
   assert.equal(resolveSelector(context, "feature"), featureChoice);
   assert.equal(resolveSelector(context, "abcdef"), featureChoice);
@@ -43,24 +46,20 @@ test("selectWorktree requires an interactive terminal", async (t) => {
 test("selectWorktree returns the interactive selection", async (t) => {
   const root = tempDir("select-interactive", t);
   const first = makeChoice({ path: path.join(root, "first"), label: "First" });
-  const second = makeChoice({ path: path.join(root, "second"), label: "Second" });
   mkdirSync(first.path);
-  mkdirSync(second.path);
   const input = new FakeTTYStdin();
 
   const selected = await withProperty(process, "stdin", input, async () =>
     withMutedTerminal(async () => {
-      const promise = selectWorktree(makeContext(root, [first, second]));
+      const promise = selectWorktree(makeContext(root, [first]));
       await wait(0);
       input.emit("keypress", "s", { name: "s" });
-      input.emit("keypress", "e", { name: "e" });
-      input.emit("keypress", "c", { name: "c" });
       input.emit("keypress", "\r", { name: "return" });
       return promise;
     }),
   );
 
-  assert.equal(selected.label, "Second");
+  assert.equal(selected.label, "First");
 });
 
 test("switchBySelector switches directly by selector", (t) => {

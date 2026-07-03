@@ -1,19 +1,34 @@
-import { existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import type { FSWatcher } from "node:fs";
 import path from "node:path";
+import { codexCatalogPath } from "../codex.js";
 import { CliError } from "../errors.js";
 import { isDanglingSymlink, normalizePath, resolveExistingPath, samePath } from "../path-utils.js";
 import { activeSource } from "../source.js";
 import type { ProjectContext, WorktreeChoice } from "../types.js";
 import { formatChoiceList, formatNumberedChoiceList, runInteractiveWorktreeSwitcher, selectFromInteractiveWorktreeList } from "../ui.js";
-import { worktreeListItemsModifiedNewestFirst } from "../worktrees.js";
+import type { WorktreeSwitcherSnapshot } from "../ui.js";
+import { buildProjectContext, worktreeListItemsModifiedNewestFirst } from "../worktrees.js";
 
 type SwitchSourceOptions = {
   quiet?: boolean;
 };
 
+type WatchTarget = {
+  path: string;
+  shouldRefresh: (eventType: string, filename: string | Buffer | null) => boolean;
+};
+
 export function resolveSelector(context: ProjectContext, selector: string): WorktreeChoice {
   const directPath = resolveExistingPath(selector, context.cwd);
   const lowerSelector = selector.toLowerCase();
+  if (lowerSelector === "root") {
+    const root = context.choices.find((choice) => choice.isMain) ?? context.choices.find((choice) => samePath(choice.path, context.mainRoot));
+    if (root) {
+      return root;
+    }
+  }
+
   const matches = context.choices.filter((choice) => {
     const branch = choice.branch ?? "";
     const head = choice.head ?? "";
@@ -87,10 +102,109 @@ export async function openWorktreeSwitcher(context: ProjectContext, initialQuery
     active,
     initialQuery,
     items: worktreeListItemsModifiedNewestFirst(context.choices),
+    onRefresh: (refresh) => watchWorktreeSwitcher(context, refresh),
     onSelect: (target) => {
       switchSource(context, target, { quiet: true });
     },
   });
+}
+
+function watchWorktreeSwitcher(context: ProjectContext, refresh: (snapshot: WorktreeSwitcherSnapshot) => void): () => void {
+  const watchers = new Map<string, FSWatcher>();
+  let closed = false;
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleRefresh = (): void => {
+    if (closed || refreshTimer) {
+      return;
+    }
+
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      if (closed) {
+        return;
+      }
+
+      try {
+        refresh(loadWorktreeSwitcherSnapshot(context));
+        syncWatchedPaths();
+      } catch {
+        // Git may briefly expose incomplete metadata while worktree commands are running.
+      }
+    }, 100);
+  };
+
+  const syncWatchedPaths = (): void => {
+    for (const [targetPath, watcher] of watchers) {
+      if (!existsSync(targetPath)) {
+        watcher.close();
+        watchers.delete(targetPath);
+      }
+    }
+
+    for (const target of worktreeSwitcherWatchTargets(context)) {
+      const targetPath = target.path;
+      if (watchers.has(targetPath) || !existsSync(targetPath)) {
+        continue;
+      }
+
+      try {
+        const watcher = watch(targetPath, (eventType, filename) => {
+          if (target.shouldRefresh(eventType, filename)) {
+            scheduleRefresh();
+          }
+        });
+        watcher.on("error", scheduleRefresh);
+        watchers.set(targetPath, watcher);
+      } catch {
+        // Missing or platform-specific unwatchable paths can be skipped.
+      }
+    }
+  };
+
+  syncWatchedPaths();
+
+  return () => {
+    closed = true;
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+
+    for (const watcher of watchers.values()) {
+      watcher.close();
+    }
+    watchers.clear();
+  };
+}
+
+function loadWorktreeSwitcherSnapshot(context: ProjectContext): WorktreeSwitcherSnapshot {
+  const nextContext = buildProjectContext(context.mainRoot);
+  return {
+    active: activeSource(nextContext),
+    items: worktreeListItemsModifiedNewestFirst(nextContext.choices),
+  };
+}
+
+function worktreeSwitcherWatchTargets(context: ProjectContext): WatchTarget[] {
+  const catalogPath = codexCatalogPath();
+  const catalogName = path.basename(catalogPath);
+  const anyEvent = (): boolean => true;
+  const worktreesEntry = (eventType: string, filename: string | Buffer | null): boolean => eventType === "rename" && filenameText(filename) === "worktrees";
+  const directoryEntryRenamed = (eventType: string): boolean => eventType === "rename";
+  const catalogEntry = (eventType: string, filename: string | Buffer | null): boolean => eventType === "rename" && filenameText(filename) === catalogName;
+
+  return [
+    { path: context.commonDir, shouldRefresh: worktreesEntry },
+    { path: path.join(context.commonDir, "worktrees"), shouldRefresh: directoryEntryRenamed },
+    { path: context.liveDir, shouldRefresh: anyEvent },
+    { path: path.dirname(catalogPath), shouldRefresh: catalogEntry },
+    { path: catalogPath, shouldRefresh: anyEvent },
+  ];
+}
+
+function filenameText(filename: string | Buffer | null): string | null {
+  return typeof filename === "string" ? filename : filename?.toString() ?? null;
 }
 
 export function switchSource(context: ProjectContext, target: WorktreeChoice, options: SwitchSourceOptions = {}): void {

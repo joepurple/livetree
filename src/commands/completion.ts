@@ -36,7 +36,7 @@ _lt() {
   fi
 
   case "$words[2]" in
-    use|cd|ls)
+    use|cd)
       selectors=("\${(@f)$(command lt __complete selectors "$PREFIX")}")
       compadd -- "\${selectors[@]}"
       ;;
@@ -69,6 +69,10 @@ function selectorCandidates(choices: WorktreeChoice[]): string[] {
   };
 
   for (const choice of choices) {
+    if (choice.isMain) {
+      add("root");
+    }
+
     add(choice.branch);
     add(path.basename(choice.path));
     add(choice.head && !/^0+$/.test(choice.head) ? choice.head.slice(0, 12) : null);

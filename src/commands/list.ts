@@ -1,20 +1,15 @@
 import { activeSource } from "../source.js";
-import { browseInteractiveWorktreeList, filterWorktreeListItems, printWorktreeList } from "../ui.js";
+import { CliError } from "../errors.js";
+import { printWorktreeList } from "../ui.js";
 import { worktreeListItemsModifiedNewestFirst } from "../worktrees.js";
 import type { ProjectContext } from "../types.js";
 
-export async function listWorktrees(context: ProjectContext, query = ""): Promise<void> {
-  const active = activeSource(context);
-  const items = worktreeListItemsModifiedNewestFirst(context.choices);
-
-  if (process.stdin.isTTY) {
-    await browseInteractiveWorktreeList({
-      active,
-      initialQuery: query,
-      items,
-    });
-    return;
+export async function listWorktrees(context: ProjectContext, extraArgs = ""): Promise<void> {
+  if (extraArgs.trim()) {
+    throw new CliError("Usage: lt ls");
   }
 
-  printWorktreeList(filterWorktreeListItems(items, query), active, query);
+  const active = activeSource(context);
+  const items = worktreeListItemsModifiedNewestFirst(context.choices);
+  printWorktreeList(items, active);
 }

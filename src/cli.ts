@@ -10,15 +10,15 @@ import { runConfiguredScript } from "./commands/run.js";
 import { runShellCommand, watchShellCommand } from "./commands/shell.js";
 import { contextWithSelectedSource, openWorktreeSwitcher, switchBySelector } from "./commands/switch.js";
 import { CliError } from "./errors.js";
-import { buildProjectContext } from "./worktrees.js";
+import { buildFastProjectContext, buildProjectContext } from "./worktrees.js";
 
 const usage = `Usage:
   lt
   lt use [selector]
   lt @<selector>
   lt <script-name> [args...]
-  lt ls [query]
-  lt cd [query]
+  lt ls
+  lt cd [selector]
   lt init
   lt run <script-name> [args...]
   lt watch <script-name> [args...]
@@ -58,8 +58,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const context = buildProjectContext(process.cwd());
-  if (context.choices.length === 0) {
+  const needsChoices = commandNeedsChoices(args);
+  const context = needsChoices ? buildProjectContext(process.cwd()) : buildFastProjectContext(process.cwd());
+  if (needsChoices && context.choices.length === 0) {
     throw new CliError("No worktrees found for this project.");
   }
 
@@ -144,6 +145,11 @@ async function runProjectCommand(context: ReturnType<typeof buildProjectContext>
   }
 
   await openWorktreeSwitcher(context);
+}
+
+function commandNeedsChoices(args: string[]): boolean {
+  const command = args[0] ?? "";
+  return args.length === 0 || ["init", "ls", "cd", "rm", "use"].includes(command) || command.startsWith("@");
 }
 
 main().catch((error: unknown) => {

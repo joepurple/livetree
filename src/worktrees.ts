@@ -1,13 +1,23 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { codexChatForPath, syncedBranchForPath } from "./codex.js";
+import { codexMetadataForPaths } from "./codex.js";
 import { CliError } from "./errors.js";
 import { git, gitCommonDir, parseWorktreeList } from "./git.js";
 import { firstPositiveNumber, maxPositiveNumber, pathModifiedAtMs } from "./path-utils.js";
 import type { CreatedWorktreeChoice, ModifiedWorktreeChoice, ProjectContext, WorktreeChoice, WorktreeListItem, WorktreeRecord } from "./types.js";
 
-export function buildProjectContext(cwd: string): ProjectContext {
+type BuildProjectContextOptions = {
+  loadChoices?: boolean;
+};
+
+type WorktreeMetadata = {
+  chat: WorktreeChoice["chat"];
+  lastCommitAtMs: number | null;
+  syncedBranch: string | null;
+};
+
+export function buildProjectContext(cwd: string, options: BuildProjectContextOptions = {}): ProjectContext {
   const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "lt must be run inside a Git worktree.");
   const commonDir = gitCommonDir(currentRoot);
   const records = parseWorktreeList(git(["--git-dir", commonDir, "worktree", "list", "--porcelain"], currentRoot));
@@ -21,7 +31,7 @@ export function buildProjectContext(cwd: string): ProjectContext {
   const liveDir = path.join(mainRoot, ".livetree");
   const srcLink = path.join(liveDir, "src");
   const stateFile = path.join(liveDir, ".source");
-  const choices = worktrees.map((record, index) => enrichWorktree(record, index === 0));
+  const choices = options.loadChoices === false ? [] : enrichWorktrees(worktrees, commonDir, currentRoot);
 
   return {
     cwd,
@@ -33,6 +43,10 @@ export function buildProjectContext(cwd: string): ProjectContext {
     stateFile,
     choices,
   };
+}
+
+export function buildFastProjectContext(cwd: string): ProjectContext {
+  return buildProjectContext(cwd, { loadChoices: false });
 }
 
 export function worktreeListItemsModifiedNewestFirst(choices: WorktreeChoice[]): WorktreeListItem[] {
@@ -88,20 +102,35 @@ export function markWorktreeInitialized(choice: WorktreeChoice): void {
   writeFileSync(path.join(liveDir, ".source"), `${choice.path}\n`, "utf8");
 }
 
-function enrichWorktree(record: WorktreeRecord, isMain: boolean): WorktreeChoice {
+function enrichWorktrees(records: WorktreeRecord[], commonDir: string, cwd: string): WorktreeChoice[] {
+  const codexMetadata = codexMetadataForPaths(records.map((record) => record.path));
+  const commitTimes = worktreeLastCommitTimesByHead(records, commonDir, cwd);
+
+  return records.map((record, index) => {
+    const metadata = codexMetadata.get(record.path);
+    return enrichWorktree(record, index === 0, {
+      chat: metadata?.chat ?? null,
+      syncedBranch: metadata?.syncedBranch ?? null,
+      lastCommitAtMs: record.head ? (commitTimes.get(record.head) ?? null) : null,
+    });
+  });
+}
+
+function enrichWorktree(record: WorktreeRecord, isMain: boolean, metadata: WorktreeMetadata): WorktreeChoice {
   if (isMain) {
-    const ref = refForWorktree(record);
+    const ref = refForWorktree(record, metadata);
     return {
       ...record,
       isMain,
       chat: null,
       ref,
+      lastCommitAtMs: metadata.lastCommitAtMs,
       label: ref ? `ROOT [${ref}]` : "ROOT",
     };
   }
 
-  const chat = codexChatForPath(record.path);
-  const ref = refForWorktree(record);
+  const chat = metadata.chat;
+  const ref = refForWorktree(record, metadata);
   let label: string;
 
   if (chat?.title && ref) {
@@ -119,18 +148,18 @@ function enrichWorktree(record: WorktreeRecord, isMain: boolean): WorktreeChoice
     isMain,
     chat,
     ref,
+    lastCommitAtMs: metadata.lastCommitAtMs,
     label,
   };
 }
 
-function refForWorktree(record: WorktreeRecord): string | null {
+function refForWorktree(record: WorktreeRecord, metadata: Pick<WorktreeMetadata, "syncedBranch">): string | null {
   if (record.branch) {
     return record.branch;
   }
 
-  const synced = syncedBranchForPath(record.path);
-  if (synced) {
-    return synced;
+  if (metadata.syncedBranch) {
+    return metadata.syncedBranch;
   }
 
   if (record.head && !/^0+$/.test(record.head)) {
@@ -143,14 +172,14 @@ function refForWorktree(record: WorktreeRecord): string | null {
 function worktreeModifiedAtMs(choice: WorktreeChoice): number {
   const rootModifiedAt = pathModifiedAtMs(choice.path);
   const dirtyModifiedAt = worktreeDirtyModifiedAtMs(choice.path);
-  const commitModifiedAt = worktreeLastCommitAtMs(choice.path);
+  const commitModifiedAt = choice.lastCommitAtMs ?? worktreeLastCommitAtMs(choice.path);
   return maxPositiveNumber(rootModifiedAt, dirtyModifiedAt, commitModifiedAt) ?? Number.NEGATIVE_INFINITY;
 }
 
 function worktreeDirtyModifiedAtMs(worktreePath: string): number | null {
   let output: string;
   try {
-    output = execFileSync("git", ["-C", worktreePath, "status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+    output = execFileSync("git", ["-C", worktreePath, "status", "--porcelain=v1", "-z", "--untracked-files=normal"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -191,6 +220,35 @@ function parsePorcelainPaths(output: string): string[] {
   }
 
   return paths;
+}
+
+function worktreeLastCommitTimesByHead(records: WorktreeRecord[], commonDir: string, cwd: string): Map<string, number> {
+  const heads = [...new Set(records.map((record) => record.head).filter((head): head is string => typeof head === "string" && !/^0+$/.test(head)))];
+  const times = new Map<string, number>();
+  if (heads.length === 0) {
+    return times;
+  }
+
+  let output: string;
+  try {
+    output = execFileSync("git", ["--git-dir", commonDir, "show", "-s", "--format=%H%x00%ct", ...heads], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return times;
+  }
+
+  for (const line of output.split("\n")) {
+    const [head, secondsText] = line.split("\0");
+    const seconds = Number.parseInt(secondsText ?? "", 10);
+    if (head && Number.isFinite(seconds)) {
+      times.set(head, seconds * 1000);
+    }
+  }
+
+  return times;
 }
 
 function worktreeLastCommitAtMs(worktreePath: string): number | null {

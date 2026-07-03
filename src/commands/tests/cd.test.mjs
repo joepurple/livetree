@@ -5,7 +5,7 @@ import test from "node:test";
 import { cdToWorktree } from "../../../dist/commands/cd.js";
 import { FakeTTYStdin, makeChoice, makeContext, tempDir, wait, withMutedTerminal, withProperty } from "../../tests/helpers.mjs";
 
-test("cdToWorktree copies a cd command for the selected worktree", async (t) => {
+test("cdToWorktree copies a cd command for a selector", async (t) => {
   const root = tempDir("cd-root", t);
   const api = path.join(root, "api work");
   const web = path.join(root, "web");
@@ -33,7 +33,7 @@ test("cdToWorktree rejects ambiguous non-interactive matches", async (t) => {
   const copied = [];
 
   await withProperty(process.stdin, "isTTY", false, async () => {
-    await assert.rejects(cdToWorktree(context, "", { writePasteboard: (value) => copied.push(value) }), /More than one worktree matched/);
+    await assert.rejects(cdToWorktree(context, "", { writePasteboard: (value) => copied.push(value) }), /Choose a worktree with 'lt cd <selector>'/);
   });
   assert.deepEqual(copied, []);
 });
@@ -41,12 +41,9 @@ test("cdToWorktree rejects ambiguous non-interactive matches", async (t) => {
 test("cdToWorktree opens a selectable browser in interactive mode", async (t) => {
   const root = tempDir("cd-interactive", t);
   const api = path.join(root, "api");
-  const web = path.join(root, "web");
   mkdirSync(api);
-  mkdirSync(web);
   const context = makeContext(root, [
     makeChoice({ path: api, label: "API Server", branch: "api" }),
-    makeChoice({ path: web, label: "Web Client", branch: "web" }),
   ]);
   const input = new FakeTTYStdin();
   const copied = [];
@@ -54,7 +51,7 @@ test("cdToWorktree opens a selectable browser in interactive mode", async (t) =>
   await withProperty(process.stdin, "isTTY", true, async () =>
     withProperty(process, "stdin", input, async () =>
       withMutedTerminal(async () => {
-        const promise = cdToWorktree(context, "web", { writePasteboard: (value) => copied.push(value) });
+        const promise = cdToWorktree(context, "", { writePasteboard: (value) => copied.push(value) });
         await wait(0);
         input.emit("keypress", "\r", { name: "return" });
         await promise;
@@ -62,5 +59,5 @@ test("cdToWorktree opens a selectable browser in interactive mode", async (t) =>
     ),
   );
 
-  assert.deepEqual(copied, [`cd '${web}'`]);
+  assert.deepEqual(copied, [`cd '${api}'`]);
 });

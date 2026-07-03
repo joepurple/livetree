@@ -13,8 +13,8 @@ lt
 lt use [selector]
 lt @<selector>
 lt <script-name> [args...]
-lt ls [query]
-lt cd [query]
+lt ls
+lt cd [selector]
 lt init
 lt run <script-name> [args...]
 lt watch <script-name> [args...]
@@ -25,7 +25,7 @@ lt rm
 lt install tools
 ```
 
-With no arguments, `lt` opens the fullscreen searchable switcher. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to switch to the highlighted worktree, Esc to clear the search box, and Ctrl-C to exit. To switch directly, use `lt use <selector>` or `lt @<selector>`. Selectors match a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
+With no arguments, `lt` opens the fullscreen searchable switcher. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to switch to the highlighted worktree, Esc to clear the search box, and Ctrl-C to exit. The fullscreen switcher updates live when worktrees, Codex metadata, or the active live tree change. To switch directly, use `lt use <selector>` or `lt @<selector>`. Selectors match `root` for the main project worktree, a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
 
 Put another `lt` command after `@<selector>` to run that command inside the selected worktree without changing `.livetree/src`:
 
@@ -34,7 +34,7 @@ lt @dark-mode-mobile : pwd
 lt @dark-mode-mobile api
 ```
 
-Use `lt ls` to browse worktrees in a searchable list UI without selecting or switching the active worktree. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to scroll, Enter to close, and Esc to clear the search or close an empty search. Add a query to prefill the search box:
+Use `lt ls` to print worktrees without selecting or switching the active worktree:
 
 ```text
 10m  * Plan push notifications rollout [push-notifs]
@@ -43,7 +43,7 @@ Use `lt ls` to browse worktrees in a searchable list UI without selecting or swi
     /Users/avinoam/code/ecosconnect
 ```
 
-Use `lt cd` to open the same searchable list, select a worktree, and copy a ready-to-paste `cd <worktree>` command to the macOS pasteboard. `lt cd api` pre-fills the search; in non-interactive use, it copies the command when the query matches exactly one worktree.
+Use `lt cd` to select a worktree and copy a ready-to-paste `cd <worktree>` command to the macOS pasteboard. Use `lt cd <selector>` to copy a command directly.
 
 Install zsh tab completion into `~/.zshrc`:
 
@@ -51,7 +51,7 @@ Install zsh tab completion into `~/.zshrc`:
 lt install tools
 ```
 
-Selector completions are available for `lt use`, `lt cd`, `lt ls`, and `lt @<selector>`.
+Selector completions are available for `lt use`, `lt cd`, and `lt @<selector>`.
 
 Use `lt init` to initialize every worktree that has not been initialized yet. A worktree is considered initialized when `<worktree>/.livetree` exists. For each uninitialized worktree, `lt` copies any configured files from the main worktree, runs the project init script in that worktree, then writes `<worktree>/.livetree/.source` as the initialization marker. Define init behavior in `.ltconf` at the main worktree root:
 
@@ -118,7 +118,7 @@ Any extra arguments after the script name are passed through to the configured c
 lt lt init
 ```
 
-Use `lt rm` to select linked worktrees to remove in the same searchable picker. Tab or Space toggles the highlighted worktree. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `lt` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `lt` prunes the stale Git metadata and asks before deleting the leftover directory. When a removed worktree has an associated Codex chat, `lt` archives it with `codex archive`.
+Use `lt rm` to select linked worktrees to remove. Tab or Space toggles the highlighted worktree. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `lt` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `lt` prunes the stale Git metadata and asks before deleting the leftover directory. When a removed worktree has an associated Codex chat, `lt` archives it with `codex archive`.
 
 Install locally while developing:
 

@@ -1,36 +1,36 @@
 import { spawnSync } from "node:child_process";
 import { activeSource } from "../source.js";
-import { filterWorktreeListItems, formatChoiceList, selectFromInteractiveWorktreeBrowser } from "../ui.js";
+import { formatChoiceList, selectFromInteractiveWorktreeBrowser } from "../ui.js";
 import { worktreeListItemsModifiedNewestFirst } from "../worktrees.js";
 import { CliError } from "../errors.js";
+import { resolveSelector } from "./switch.js";
 import type { ProjectContext, WorktreeChoice } from "../types.js";
 
 type CdToWorktreeOptions = {
   writePasteboard?: (value: string) => void;
 };
 
-export async function cdToWorktree(context: ProjectContext, query = "", options: CdToWorktreeOptions = {}): Promise<void> {
+export async function cdToWorktree(context: ProjectContext, selectorInput = "", options: CdToWorktreeOptions = {}): Promise<void> {
+  const selector = selectorInput.trim();
   const active = activeSource(context);
   const items = worktreeListItemsModifiedNewestFirst(context.choices);
-  const target = process.stdin.isTTY ? await selectFromInteractiveWorktreeBrowser({ active, initialQuery: query, items }) : resolveCdTarget(context, query);
+  const target = selector ? resolveSelector(context, selector) : process.stdin.isTTY ? await selectFromInteractiveWorktreeBrowser({ active, items }) : resolveCdTarget(context);
   const command = `cd ${shellQuote(target.path)}`;
   const writePasteboard = options.writePasteboard ?? writeMacPasteboard;
   writePasteboard(command);
   process.stderr.write(`Copied to pasteboard: ${command}\n`);
 }
 
-function resolveCdTarget(context: ProjectContext, query: string): WorktreeChoice {
-  const items = filterWorktreeListItems(worktreeListItemsModifiedNewestFirst(context.choices), query);
-
-  if (items.length === 1) {
-    return items[0]!.choice;
+function resolveCdTarget(context: ProjectContext): WorktreeChoice {
+  if (context.choices.length === 1) {
+    return context.choices[0]!;
   }
 
-  if (items.length === 0) {
-    throw new CliError(`No worktrees matched '${query.trim()}'.`);
+  if (context.choices.length === 0) {
+    throw new CliError("No worktrees found.");
   }
 
-  throw new CliError(`More than one worktree matched '${query.trim()}':\n${formatChoiceList(items.map((item) => item.choice), activeSource(context))}`);
+  throw new CliError(`Choose a worktree with 'lt cd <selector>':\n${formatChoiceList(context.choices, activeSource(context))}`);
 }
 
 function writeMacPasteboard(value: string): void {

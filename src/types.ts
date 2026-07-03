@@ -16,6 +16,7 @@ export type WorktreeChoice = WorktreeRecord & {
   ref: string | null;
   chat: CodexChat | null;
   isMain: boolean;
+  lastCommitAtMs?: number | null;
 };
 
 export type ProjectContext = {

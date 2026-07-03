@@ -20,6 +20,11 @@ export async function confirmYesNo(prompt: string): Promise<boolean> {
 }
 
 export function writeInlineBlock(lines: string[], previousLineCount: number): void {
+  if (lines.length === 0 && previousLineCount === 0) {
+    return;
+  }
+
+  readline.cursorTo(process.stderr, 0);
   if (previousLineCount > 0) {
     readline.moveCursor(process.stderr, 0, -previousLineCount);
   }
@@ -27,9 +32,19 @@ export function writeInlineBlock(lines: string[], previousLineCount: number): vo
   const linesToClear = Math.max(previousLineCount, lines.length);
   for (let index = 0; index < linesToClear; index += 1) {
     const line = lines[index] ?? "";
-    readline.clearLine(process.stderr, 0);
     readline.cursorTo(process.stderr, 0);
-    process.stderr.write(`${line}\n`);
+    readline.clearLine(process.stderr, 0);
+    if (line) {
+      process.stderr.write(line);
+    }
+
+    if (index < linesToClear - 1) {
+      process.stderr.write("\n");
+    }
+  }
+
+  if (linesToClear > 0) {
+    process.stderr.write("\n");
   }
 
   if (previousLineCount > lines.length) {
