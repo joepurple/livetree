@@ -63,6 +63,12 @@ export async function selectWorktree(context: ProjectContext): Promise<WorktreeC
   return selected;
 }
 
+export async function switchBySelector(context: ProjectContext, selector: string): Promise<void> {
+  const trimmed = selector.trim();
+  const target = trimmed ? resolveSelector(context, trimmed) : await selectWorktree(context);
+  switchSource(context, target);
+}
+
 export async function openWorktreeSwitcher(context: ProjectContext, initialQuery = ""): Promise<void> {
   const active = activeSource(context);
 

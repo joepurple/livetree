@@ -9,7 +9,7 @@ type GoToWorktreeOptions = {
   writePasteboard?: (value: string) => void;
 };
 
-export async function goToWorktree(context: ProjectContext, query = "", options: GoToWorktreeOptions = {}): Promise<void> {
+export async function cdToWorktree(context: ProjectContext, query = "", options: GoToWorktreeOptions = {}): Promise<void> {
   const active = activeSource(context);
   const items = worktreeListItemsModifiedNewestFirst(context.choices);
   const target = process.stdin.isTTY ? await selectFromInteractiveWorktreeBrowser({ active, initialQuery: query, items }) : resolveGoTarget(context, query);

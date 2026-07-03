@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { openWorktreeSwitcher, resolveSelector, selectWorktree, switchSource } from "../../../dist/commands/switch.js";
+import { openWorktreeSwitcher, resolveSelector, selectWorktree, switchBySelector, switchSource } from "../../../dist/commands/switch.js";
 import { FakeTTYStdin, captureConsole, makeChoice, makeContext, tempDir, wait, withMutedTerminal, withProperty } from "../../tests/helpers.mjs";
 
 test("resolves selectors by path, branch, hash, basename, title, and thread", (t) => {
@@ -61,6 +61,18 @@ test("selectWorktree returns the interactive selection", async (t) => {
   );
 
   assert.equal(selected.label, "Second");
+});
+
+test("switchBySelector switches directly by selector", (t) => {
+  const root = tempDir("switch-by-selector", t);
+  const target = path.join(root, "target");
+  mkdirSync(target);
+  const context = makeContext(root, [makeChoice({ path: target, label: "Target", branch: "feature" })]);
+
+  switchBySelector(context, "feature");
+
+  assert.equal(readlinkSync(context.srcLink), target);
+  assert.equal(readFileSync(context.stateFile, "utf8"), `${target}\n`);
 });
 
 test("openWorktreeSwitcher switches on enter and stays open until ctrl-c", async (t) => {

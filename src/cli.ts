@@ -3,10 +3,12 @@
 import { initWorktree } from "./commands/init.js";
 import { listWorktrees } from "./commands/list.js";
 import { goToWorktree } from "./commands/go.js";
+import { completeSelectors, printCompletionScript } from "./commands/completion.js";
+import { installTools } from "./commands/install.js";
 import { removeWorktrees } from "./commands/remove.js";
 import { runConfiguredScript } from "./commands/run.js";
 import { runShellCommand, watchShellCommand } from "./commands/shell.js";
-import { openWorktreeSwitcher, resolveSelector, selectWorktree, switchSource } from "./commands/switch.js";
+import { openWorktreeSwitcher, switchBySelector } from "./commands/switch.js";
 import { CliError } from "./errors.js";
 import { buildProjectContext } from "./worktrees.js";
 
@@ -14,6 +16,7 @@ const usage = `Usage:
   lt
   lt use [selector]
   lt switch [selector]
+  lt @<selector>
   lt switcher [query]
   lt <script-name> [args...]
   lt list [query]
@@ -28,6 +31,8 @@ const usage = `Usage:
   lt rm
   lt remove
   lt delete
+  lt completion zsh
+  lt install tools
 
 Use 'lt switch <selector>' to select a worktree by branch name,
 worktree directory name, commit prefix, path, Codex thread id prefix, or
@@ -37,6 +42,30 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.length > 0 && ["-h", "--help", "help"].includes(args[0] ?? "")) {
     console.log(usage);
+    return;
+  }
+
+  if (args[0] === "completion") {
+    printCompletionScript(args[1] ?? "");
+    return;
+  }
+
+  if (args[0] === "install") {
+    installTools(args[1] ?? "");
+    return;
+  }
+
+  if (args[0] === "__complete") {
+    if (args[1] === "selectors") {
+      try {
+        const context = buildProjectContext(process.cwd());
+        for (const candidate of completeSelectors(context, args[2] ?? "")) {
+          console.log(candidate);
+        }
+      } catch {
+        // Shell completion should fail closed rather than printing errors into the prompt.
+      }
+    }
     return;
   }
 
@@ -84,10 +113,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0]?.startsWith("@")) {
+    const selector = [args[0].slice(1), ...args.slice(1)].join(" ");
+    await switchBySelector(context, selector);
+    return;
+  }
+
   if (["use", "switch"].includes(args[0] ?? "")) {
-    const selector = args.slice(1).join(" ").trim();
-    const target = selector ? resolveSelector(context, selector) : await selectWorktree(context);
-    switchSource(context, target);
+    await switchBySelector(context, args.slice(1).join(" "));
     return;
   }
 
