@@ -18,6 +18,9 @@ lt ls [query]
 lt init
 lt run <script-name> [args...]
 lt watch <script-name> [args...]
+lt : <shell-command> [args...]
+lt run: <shell-command> [args...]
+lt watch: <shell-command> [args...]
 lt rm
 ```
 
@@ -66,7 +69,24 @@ run:
   mobile: cd src/modules/mobile && pnpm start
 ```
 
-Run them once with `lt api` or `lt run api`. Built-in commands take precedence over run script shortcuts. Run scripts start in `<main-worktree>/.livetree`, so paths should go through `src/...`.
+Run them once with `lt api` or `lt run api`. Built-in commands take precedence over run script shortcuts. Run scripts start in the active live worktree directory.
+
+Use `lt :` to run an ad hoc shell command from the active live worktree directory:
+
+```sh
+lt : git status
+lt run: git status
+lt : "pwd && git status --short"
+```
+
+Quote the whole command when using shell operators like `&&`, pipes, or redirects.
+
+Use `lt watch:` to run an ad hoc shell command from the active live worktree directory again whenever `.livetree/src` points at a new source. If the command is still running when the live worktree changes, `lt` stops it before starting it in the new source:
+
+```sh
+lt watch: npm test
+lt watch: "pwd && git status --short"
+```
 
 Use `lt watch api` to keep a script tied to the live worktree. `lt` watches `.livetree/src`; when you switch the active worktree, it stops the current process tree and starts the script again against the new target:
 

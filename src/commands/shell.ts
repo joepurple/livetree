@@ -1,138 +1,62 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import type { ChildProcess, SpawnSyncReturns } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { readLtConfig } from "../config.js";
 import { CliError } from "../errors.js";
 import { readRunnableLivetreeSource, requireRunnableLivetreeSource } from "../source.js";
-import type { LivetreeSourceSnapshot, ProjectContext, RunConfiguredScriptOptions, RunOptions } from "../types.js";
+import type { LivetreeSourceSnapshot, ProjectContext } from "../types.js";
 
-export async function runConfiguredScript(context: ProjectContext, args: string[], watch: boolean, options: RunConfiguredScriptOptions = {}): Promise<void> {
-  const command = watch ? "watch" : "run";
-  const usageLine = options.shortcut ? "lt <script-name> [args...]" : `lt ${command} <script-name> [args...]`;
-  const runOptions = parseRunArgs(args, command, usageLine, !options.shortcut);
-  const config = readLtConfig(context);
-
-  if (!runOptions.scriptName) {
-    throw new CliError(`Usage: ${usageLine}${formatAvailableRunScripts(config)}`);
-  }
-
-  const script = config.runScripts[runOptions.scriptName];
-  if (!script) {
-    if (options.shortcut) {
-      throw new CliError(
-        `Unknown command or run script '${runOptions.scriptName}'. To switch worktrees, use 'lt switch ${args.join(" ")}'.${formatAvailableRunScripts(config)}`,
-      );
-    }
-
-    throw new CliError(`No run script named '${runOptions.scriptName}' in ${config.configPath}.${formatAvailableRunScripts(config)}`);
-  }
-
-  if (watch) {
-    await runWatchedScript(context, runOptions.scriptName, script, runOptions.scriptArgs);
-  } else {
-    runScriptOnce(context, runOptions.scriptName, script, runOptions.scriptArgs);
-  }
-}
-
-function parseRunArgs(args: string[], command: "run" | "watch", usageLine: string, allowStaticOption: boolean): RunOptions {
-  let scriptName: string | null = null;
-  const scriptArgs: string[] = [];
-
-  for (const arg of args) {
-    if (!scriptName) {
-      if (allowStaticOption && command === "run" && arg === "--static") {
-        continue;
-      }
-
-      if (arg.startsWith("-")) {
-        throw new CliError(`Unknown option: ${arg}\n\nUsage: ${usageLine}`);
-      }
-
-      scriptName = arg;
-      continue;
-    }
-
-    scriptArgs.push(arg);
-  }
-
-  if (!scriptName) {
-    return {
-      scriptName: null,
-      scriptArgs,
-    };
-  }
-
-  return {
-    scriptName,
-    scriptArgs,
-  };
-}
-
-function formatAvailableRunScripts(config: { configPath: string; runScripts: Record<string, string> }): string {
-  const names = Object.keys(config.runScripts).sort();
-  if (names.length === 0) {
-    return `\n\nNo run scripts are defined in ${config.configPath}. Add one like:\nrun:\n  web: cd src/modules/web && pnpm start`;
-  }
-
-  return `\n\nAvailable run scripts:\n${names.map((name) => `  ${name}`).join("\n")}`;
-}
-
-function scriptWithArgs(script: string, args: string[]): string {
+export function runShellCommand(context: ProjectContext, args: string[], commandName = ":"): void {
   if (args.length === 0) {
-    return script;
+    throw new CliError(`Usage: lt ${commandName} <shell-command> [args...]`);
   }
 
-  return `${script} ${args.map(shellQuote).join(" ")}`;
-}
-
-function shellQuote(value: string): string {
-  if (value === "") {
-    return "''";
-  }
-
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function runScriptOnce(context: ProjectContext, scriptName: string, script: string, scriptArgs: string[]): void {
   const snapshot = requireRunnableLivetreeSource(context);
-  const result = spawnSync(scriptWithArgs(script, scriptArgs), {
+  const command = shellCommandFromArgs(args);
+  const result = spawnSync(command, {
     cwd: snapshot.source,
-    env: runScriptEnv(context, scriptName, snapshot.source),
+    env: shellCommandEnv(context, snapshot.source),
     shell: true,
     stdio: "inherit",
   });
 
-  assertRunResult(result, scriptName);
+  assertShellCommandResult(result);
 }
 
-async function runWatchedScript(context: ProjectContext, scriptName: string, script: string, scriptArgs: string[]): Promise<void> {
+export async function watchShellCommand(context: ProjectContext, args: string[]): Promise<void> {
+  if (args.length === 0) {
+    throw new CliError("Usage: lt watch: <shell-command> [args...]");
+  }
+
+  const command = shellCommandFromArgs(args);
   mkdirSync(context.liveDir, { recursive: true });
   let current = requireRunnableLivetreeSource(context);
   let child: ChildProcess | null = null;
   let stoppingChild: ChildProcess | null = null;
   let restarting = false;
   let shuttingDown = false;
+  let sourceAvailable = true;
   let missingLogged = false;
   let poll: NodeJS.Timeout | null = null;
 
-  console.error(`lt watch ${scriptName}: watching ${context.srcLink}`);
+  console.error(`lt watch: watching ${context.srcLink}`);
 
   const start = (snapshot: LivetreeSourceSnapshot): void => {
     current = snapshot;
+    sourceAvailable = true;
     missingLogged = false;
-    console.error(`lt watch ${scriptName}: starting for ${snapshot.source}`);
-    const startedChild = spawn(scriptWithArgs(script, scriptArgs), {
+    console.error(`lt watch: starting for ${snapshot.source}`);
+    const startedChild = spawn(command, {
       cwd: snapshot.source,
-      env: runScriptEnv(context, scriptName, snapshot.source),
+      env: shellCommandEnv(context, snapshot.source),
       shell: true,
       stdio: "inherit",
     });
     child = startedChild;
 
     startedChild.on("error", (error) => {
-      if (!shuttingDown) {
-        cleanup();
-        rejectRun(new CliError(`Run script '${scriptName}' failed to start: ${error.message}`));
+      if (startedChild === child && !shuttingDown) {
+        child = null;
+        console.error(`lt watch: shell command failed to start: ${error.message}`);
       }
     });
 
@@ -141,22 +65,21 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
         return;
       }
 
-      cleanup();
+      child = null;
       if (signal) {
-        rejectRun(new CliError(signal === "SIGINT" ? "Canceled." : `Run script '${scriptName}' terminated by signal ${signal}.`, signalExitCode(signal)));
+        console.error(`lt watch: shell command terminated by signal ${signal}; waiting for live tree change`);
         return;
       }
 
       if (code && code !== 0) {
-        rejectRun(new CliError(`Run script '${scriptName}' exited with status ${code}.`, code));
+        console.error(`lt watch: shell command exited with status ${code}; waiting for live tree change`);
         return;
       }
 
-      resolveRun();
+      console.error("lt watch: shell command exited; waiting for live tree change");
     });
   };
 
-  let resolveRun: () => void = () => undefined;
   let rejectRun: (error: CliError) => void = () => undefined;
 
   const cleanup = (): void => {
@@ -195,8 +118,9 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
       return;
     }
 
+    sourceAvailable = false;
     if (!missingLogged) {
-      console.error(`lt watch ${scriptName}: waiting for ${context.srcLink}`);
+      console.error(`lt watch: waiting for ${context.srcLink}`);
       missingLogged = true;
     }
   };
@@ -212,12 +136,14 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
     }
 
     if (!next) {
-      void restart(null);
+      if (sourceAvailable || child) {
+        void restart(null);
+      }
       return;
     }
 
-    if (!child || next.key !== current.key) {
-      console.error(`lt watch ${scriptName}: live tree changed`);
+    if (!sourceAvailable || next.key !== current.key) {
+      console.error("lt watch: live tree changed");
       void restart(next);
     }
   };
@@ -236,7 +162,7 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
       await waitForChildToExit(previous, 5000);
     }
 
-    rejectRun(new CliError(signal === "SIGINT" ? "Canceled." : `Run script '${scriptName}' terminated by signal ${signal}.`, signalExitCode(signal)));
+    rejectRun(new CliError(signal === "SIGINT" ? "Canceled." : `Shell command watcher terminated by signal ${signal}.`, signalExitCode(signal)));
   };
 
   const onSigint = (): void => {
@@ -248,7 +174,6 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
   };
 
   return new Promise((resolve, reject) => {
-    resolveRun = resolve;
     rejectRun = reject;
     process.on("SIGINT", onSigint);
     process.on("SIGTERM", onSigterm);
@@ -257,28 +182,39 @@ async function runWatchedScript(context: ProjectContext, scriptName: string, scr
   });
 }
 
-function runScriptEnv(context: ProjectContext, scriptName: string, activeSourcePath: string): NodeJS.ProcessEnv {
+function shellCommandFromArgs(args: string[]): string {
+  return args.length === 1 ? args[0]! : args.map(shellQuote).join(" ");
+}
+
+function shellCommandEnv(context: ProjectContext, activeSourcePath: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     LT_ACTIVE_WORKTREE: activeSourcePath,
     LT_LIVE_DIR: context.liveDir,
     LT_LIVE_SRC: context.srcLink,
     LT_PROJECT_ROOT: context.mainRoot,
-    LT_SCRIPT: scriptName,
   };
 }
 
-function assertRunResult(result: SpawnSyncReturns<Buffer>, scriptName: string): void {
+function shellQuote(value: string): string {
+  if (value === "") {
+    return "''";
+  }
+
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function assertShellCommandResult(result: SpawnSyncReturns<Buffer>): void {
   if (result.error) {
-    throw new CliError(`Run script '${scriptName}' failed to start: ${result.error.message}`);
+    throw new CliError(`Shell command failed to start: ${result.error.message}`);
   }
 
   if (result.signal) {
-    throw new CliError(result.signal === "SIGINT" ? "Canceled." : `Run script '${scriptName}' terminated by signal ${result.signal}.`, signalExitCode(result.signal));
+    throw new CliError(result.signal === "SIGINT" ? "Canceled." : `Shell command terminated by signal ${result.signal}.`, signalExitCode(result.signal));
   }
 
   if (result.status && result.status !== 0) {
-    throw new CliError(`Run script '${scriptName}' exited with status ${result.status}.`, result.status);
+    throw new CliError(`Shell command exited with status ${result.status}.`, result.status);
   }
 }
 

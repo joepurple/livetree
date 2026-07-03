@@ -4,6 +4,7 @@ import { initWorktree } from "./commands/init.js";
 import { listWorktrees } from "./commands/list.js";
 import { removeWorktrees } from "./commands/remove.js";
 import { runConfiguredScript } from "./commands/run.js";
+import { runShellCommand, watchShellCommand } from "./commands/shell.js";
 import { resolveSelector, selectWorktree, switchSource } from "./commands/switch.js";
 import { CliError } from "./errors.js";
 import { buildProjectContext } from "./worktrees.js";
@@ -18,6 +19,9 @@ const usage = `Usage:
   lt init
   lt run <script-name> [args...]
   lt watch <script-name> [args...]
+  lt : <shell-command> [args...]
+  lt run: <shell-command> [args...]
+  lt watch: <shell-command> [args...]
   lt rm
   lt remove
   lt delete
@@ -59,6 +63,16 @@ async function main(): Promise<void> {
 
   if (args[0] === "watch") {
     await runConfiguredScript(context, args.slice(1), true);
+    return;
+  }
+
+  if ([":", "run:"].includes(args[0] ?? "")) {
+    runShellCommand(context, args.slice(1), args[0]);
+    return;
+  }
+
+  if (args[0] === "watch:") {
+    await watchShellCommand(context, args.slice(1));
     return;
   }
 
