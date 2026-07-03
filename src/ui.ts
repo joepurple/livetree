@@ -777,11 +777,34 @@ function formatInteractiveWorktreeSwitcher(options: InteractiveWorktreeSwitcherR
   const [start, end] = visibleWorktreeSwitcherRange(filtered.length, selectedIndex);
   for (let index = start; index < end; index += 1) {
     const item = filtered[index]!;
-    const line = `${index === selectedIndex ? "> " : "  "}${formatWorktreeListRow(item, active, ageWidth)}`;
-    lines.push(index === selectedIndex ? reverse(line) : line);
+    const selected = index === selectedIndex;
+    const line = `${selected ? formatSelectedWorktreePrefix(">") : "  "}${formatWorktreeListRow(item, active, ageWidth)}`;
+    lines.push(line);
+    if (index === selectedIndex) {
+      lines.push(...formatSelectedWorktreeDetails(item, ageWidth));
+    }
   }
 
   return lines;
+}
+
+function formatSelectedWorktreeDetails(item: WorktreeListItem, ageWidth: number): string[] {
+  const choice = item.choice;
+  const age = formatRelativeAge(item.modifiedAtMs).padStart(ageWidth);
+  return [
+    ...secondaryChats(choice).map((chat) => `${formatSelectedWorktreePrefix("|")}${age}    ${chat.title || chat.threadId}`),
+    `${formatSelectedWorktreePrefix("|")}${" ".repeat(ageWidth)}    ${dim(choice.path, process.stderr)}`,
+  ];
+}
+
+function secondaryChats(choice: WorktreeChoice): WorktreeChoice["chats"] {
+  const chats = choice.chats.length > 0 ? choice.chats : choice.chat ? [choice.chat] : [];
+  const primaryThreadId = choice.chat?.threadId ?? chats[0]?.threadId;
+  return primaryThreadId ? chats.filter((chat) => chat.threadId !== primaryThreadId) : chats.slice(1);
+}
+
+function formatSelectedWorktreePrefix(symbol: ">" | "|"): string {
+  return `${reverse(symbol)} `;
 }
 
 function visibleWorktreePickerRange(itemCount: number, selectedIndex: number): [number, number] {
@@ -811,7 +834,7 @@ function visibleWorktreeSwitcherRange(itemCount: number, selectedIndex: number):
 
 function visibleWorktreeSwitcherItemCount(itemCount: number): number {
   const terminalRows = process.stderr.rows;
-  const reservedRows = 3;
+  const reservedRows = 6;
   const availableRows = typeof terminalRows === "number" && terminalRows > reservedRows ? terminalRows - reservedRows : itemCount;
   return Math.max(1, Math.min(itemCount, availableRows));
 }

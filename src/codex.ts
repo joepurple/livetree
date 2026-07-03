@@ -8,6 +8,7 @@ import type { CodexChat, WorktreeChoice } from "./types.js";
 
 type CodexMetadata = {
   chat: CodexChat | null;
+  chats: CodexChat[];
   syncedBranch: string | null;
   threadId: string | null;
 };
@@ -44,6 +45,7 @@ export function codexMetadataForPaths(worktreePaths: string[]): Map<string, Code
     const syncedBranch = branch ? stripHeadsPrefix(branch) : null;
     metadata.set(worktreePath, {
       chat: null,
+      chats: [],
       syncedBranch,
       threadId,
     });
@@ -59,29 +61,30 @@ export function codexMetadataForPaths(worktreePaths: string[]): Map<string, Code
 
   const rows = queryCodexCatalogRows(worktreePaths, [...pathsByThreadId.keys()]);
   for (const row of rows) {
-    const byPath = metadata.get(row.cwd);
-    if (byPath && !byPath.chat) {
-      byPath.chat = {
-        title: row.title,
-        threadId: row.threadId,
-      };
-    }
+    appendCodexChat(metadata.get(row.cwd), row);
   }
 
   for (const row of rows) {
     const paths = pathsByThreadId.get(row.threadId) ?? [];
     for (const worktreePath of paths) {
-      const byThread = metadata.get(worktreePath);
-      if (byThread && !byThread.chat) {
-        byThread.chat = {
-          title: row.title,
-          threadId: row.threadId,
-        };
-      }
+      appendCodexChat(metadata.get(worktreePath), row);
     }
   }
 
   return metadata;
+}
+
+function appendCodexChat(metadata: CodexMetadata | undefined, row: CodexCatalogRow): void {
+  if (!metadata || !row.threadId || metadata.chats.some((chat) => chat.threadId === row.threadId)) {
+    return;
+  }
+
+  const chat = {
+    title: row.title,
+    threadId: row.threadId,
+  };
+  metadata.chats.push(chat);
+  metadata.chat ??= chat;
 }
 
 export function archiveRemovedCodexChat(choice: WorktreeChoice, threadId: string | null): void {

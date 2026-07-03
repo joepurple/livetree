@@ -47,7 +47,7 @@ test("formats list rows and choice lists", async (t) => {
 });
 
 test("prints non-interactive worktree lists", async () => {
-  const listItem = item("API work", "api");
+  const listItem = item("API work (+1)", "api");
   const { logs } = await withProperty(process.stdout, "isTTY", false, async () =>
     captureConsole(() => {
       printWorktreeList([listItem], null);
@@ -55,9 +55,56 @@ test("prints non-interactive worktree lists", async () => {
   );
 
   assert.equal(logs.length, 2);
-  assert.match(logs[0], /API work/);
-  assert.match(logs[1], /\/tmp\/API work/);
+  assert.match(logs[0], /API work \(\+1\)/);
+  assert.match(logs[1], /\/tmp\/API work \(\+1\)/);
   assert.throws(() => printWorktreeList([], null, "missing"), /No worktrees matched 'missing'/);
+});
+
+test("runInteractiveWorktreeSwitcher renders selected chat details", async () => {
+  const input = new FakeTTYStdin();
+  const output = [];
+  const work = {
+    choice: makeChoice({
+      path: "/tmp/api-work",
+      label: "Primary Chat (+1)",
+      chat: { title: "Primary Chat", threadId: "thread-primary" },
+      chats: [
+        { title: "Primary Chat", threadId: "thread-primary" },
+        { title: "Review Followup", threadId: "thread-review" },
+      ],
+    }),
+    modifiedAtMs: Date.now(),
+    searchText: "api",
+  };
+
+  await withProperty(process, "stdin", input, async () =>
+    withMutedTerminal(async () => {
+      const originalWrite = process.stderr.write;
+      process.stderr.write = (chunk) => {
+        output.push(String(chunk));
+        return true;
+      };
+
+      try {
+        const promise = runInteractiveWorktreeSwitcher({
+          active: null,
+          items: [work],
+          onSelect: () => {},
+        });
+        await wait(0);
+        input.emit("keypress", "\u0003", { ctrl: true, name: "c" });
+        await promise;
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+    }),
+  );
+
+  const rendered = output.join("");
+  assert.match(rendered, /> 0m    Primary Chat \(\+1\)/);
+  assert.doesNotMatch(rendered, /\| 0m    Primary Chat/);
+  assert.match(rendered, /\| 0m    Review Followup/);
+  assert.match(rendered, /\|       \/tmp\/api-work/);
 });
 
 test("selectFromInteractiveWorktreeList handles selection and multi-select without search", async () => {

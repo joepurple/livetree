@@ -76,8 +76,11 @@ function selectorCandidates(choices: WorktreeChoice[]): string[] {
     add(choice.branch);
     add(path.basename(choice.path));
     add(choice.head && !/^0+$/.test(choice.head) ? choice.head.slice(0, 12) : null);
-    add(choice.chat?.threadId);
-    add(choice.chat?.title);
+    const chats = choice.chats.length > 0 ? choice.chats : choice.chat ? [choice.chat] : [];
+    for (const chat of chats) {
+      add(chat.threadId);
+      add(chat.title);
+    }
     add(choice.path);
   }
 

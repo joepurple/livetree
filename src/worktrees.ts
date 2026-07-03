@@ -13,6 +13,7 @@ type BuildProjectContextOptions = {
 
 type WorktreeMetadata = {
   chat: WorktreeChoice["chat"];
+  chats: WorktreeChoice["chats"];
   lastCommitAtMs: number | null;
   syncedBranch: string | null;
 };
@@ -110,6 +111,7 @@ function enrichWorktrees(records: WorktreeRecord[], commonDir: string, cwd: stri
     const metadata = codexMetadata.get(record.path);
     return enrichWorktree(record, index === 0, {
       chat: metadata?.chat ?? null,
+      chats: metadata?.chats ?? [],
       syncedBranch: metadata?.syncedBranch ?? null,
       lastCommitAtMs: record.head ? (commitTimes.get(record.head) ?? null) : null,
     });
@@ -123,6 +125,7 @@ function enrichWorktree(record: WorktreeRecord, isMain: boolean, metadata: Workt
       ...record,
       isMain,
       chat: null,
+      chats: [],
       ref,
       lastCommitAtMs: metadata.lastCommitAtMs,
       label: ref ? `ROOT [${ref}]` : "ROOT",
@@ -130,13 +133,14 @@ function enrichWorktree(record: WorktreeRecord, isMain: boolean, metadata: Workt
   }
 
   const chat = metadata.chat;
+  const chatTitle = chat?.title ? `${chat.title}${extraChatCountLabel(metadata.chats)}` : null;
   const ref = refForWorktree(record, metadata);
   let label: string;
 
-  if (chat?.title && ref) {
-    label = `${chat.title} [${ref}]`;
-  } else if (chat?.title) {
-    label = chat.title;
+  if (chatTitle && ref) {
+    label = `${chatTitle} [${ref}]`;
+  } else if (chatTitle) {
+    label = chatTitle;
   } else if (ref) {
     label = `[${ref}]`;
   } else {
@@ -147,10 +151,15 @@ function enrichWorktree(record: WorktreeRecord, isMain: boolean, metadata: Workt
     ...record,
     isMain,
     chat,
+    chats: metadata.chats,
     ref,
     lastCommitAtMs: metadata.lastCommitAtMs,
     label,
   };
+}
+
+function extraChatCountLabel(chats: WorktreeChoice["chats"]): string {
+  return chats.length > 1 ? ` (+${chats.length - 1})` : "";
 }
 
 function refForWorktree(record: WorktreeRecord, metadata: Pick<WorktreeMetadata, "syncedBranch">): string | null {
@@ -295,7 +304,6 @@ function worktreeSearchText(choice: WorktreeChoice): string {
     choice.ref,
     choice.branch,
     choice.head,
-    choice.chat?.title,
-    choice.chat?.threadId,
+    ...choice.chats.flatMap((chat) => [chat.title, chat.threadId]),
   ].filter((value): value is string => Boolean(value)).join(" ");
 }

@@ -33,8 +33,7 @@ export function resolveSelector(context: ProjectContext, selector: string): Work
     const branch = choice.branch ?? "";
     const head = choice.head ?? "";
     const basename = path.basename(choice.path);
-    const title = choice.chat?.title.toLowerCase() ?? "";
-    const threadId = choice.chat?.threadId ?? "";
+    const chats = choice.chats.length > 0 ? choice.chats : choice.chat ? [choice.chat] : [];
 
     return (
       choice.path === selector ||
@@ -43,8 +42,7 @@ export function resolveSelector(context: ProjectContext, selector: string): Work
       basename === selector ||
       branch === selector ||
       head.startsWith(selector) ||
-      threadId.startsWith(selector) ||
-      title.includes(lowerSelector)
+      chats.some((chat) => chat.threadId.startsWith(selector) || chat.title.toLowerCase().includes(lowerSelector))
     );
   });
 

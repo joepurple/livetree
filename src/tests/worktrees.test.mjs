@@ -12,15 +12,37 @@ test("builds project context from a git repo and linked worktree", async (t) => 
     const repo = createGitRepo(t, "worktree-context");
     const linked = path.join(tempDir("linked-parent", t), "feature");
     execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: repo, stdio: "ignore" });
+    const sqliteDir = path.join(codeHome, "sqlite");
+    const db = path.join(sqliteDir, "codex-dev.db");
+    mkdirSync(sqliteDir, { recursive: true });
+    execFileSync("sqlite3", [
+      db,
+      `create table local_thread_catalog (
+        display_title text,
+        thread_id text,
+        cwd text,
+        missing_candidate integer,
+        source_updated_at integer
+      );
+      insert into local_thread_catalog values ('Older Chat', 'thread-older', ${sqlQuote(linked)}, 0, 1);
+      insert into local_thread_catalog values ('Newer Chat', 'thread-newer', ${sqlQuote(linked)}, 0, 2);`,
+    ]);
 
     const context = buildProjectContext(linked);
     assert.equal(context.mainRoot, repo);
     assert.equal(context.liveDir, path.join(repo, ".livetree"));
     assert.equal(context.choices.length, 2);
     assert.equal(context.choices[0].isMain, true);
-    assert.ok(context.choices.some((choice) => choice.path === linked && choice.ref === "feature"));
+    const linkedChoice = context.choices.find((choice) => choice.path === linked);
+    assert.equal(linkedChoice?.ref, "feature");
+    assert.equal(linkedChoice?.label, "Newer Chat (+1) [feature]");
+    assert.deepEqual(linkedChoice?.chats.map((chat) => chat.title), ["Newer Chat", "Older Chat"]);
   });
 });
+
+function sqlQuote(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
 
 test("tracks worktree initialization markers", (t) => {
   const root = tempDir("init-marker", t);
@@ -41,7 +63,15 @@ test("sorts worktrees and creates search text", (t) => {
   mkdirSync(path.join(newer, "nested"));
   const choices = [
     makeChoice({ path: older, label: "Older", branch: "older" }),
-    makeChoice({ path: newer, label: "Newer", chat: { title: "Chat Title", threadId: "thread-123" } }),
+    makeChoice({
+      path: newer,
+      label: "Newer (+1)",
+      chat: { title: "Chat Title", threadId: "thread-123" },
+      chats: [
+        { title: "Chat Title", threadId: "thread-123" },
+        { title: "Second Chat", threadId: "thread-456" },
+      ],
+    }),
   ];
 
   const modified = worktreesModifiedNewestFirst(choices);
@@ -50,6 +80,7 @@ test("sorts worktrees and creates search text", (t) => {
   const items = worktreeListItemsModifiedNewestFirst(choices);
   assert.equal(items.length, 2);
   assert.ok(items.some((item) => item.searchText.includes("Chat Title") && item.searchText.includes("thread-123")));
+  assert.ok(items.some((item) => item.searchText.includes("Second Chat") && item.searchText.includes("thread-456")));
 
   markWorktreeInitialized(makeChoice({ path: older }));
   assert.deepEqual(uninitializedWorktreesNewestFirst(choices).map((choice) => choice.path), [newer]);

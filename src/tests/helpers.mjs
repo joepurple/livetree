@@ -45,6 +45,7 @@ export function makeChoice(overrides = {}) {
     label: overrides.label ?? "worktree",
     ref: overrides.ref ?? overrides.branch ?? null,
     chat: overrides.chat ?? null,
+    chats: overrides.chats ?? (overrides.chat ? [overrides.chat] : []),
     isMain: overrides.isMain ?? false,
   };
 }
