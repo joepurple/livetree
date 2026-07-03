@@ -1,0 +1,243 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { codexChatForPath, syncedBranchForPath } from "./codex.js";
+import { CliError } from "./errors.js";
+import { git, gitCommonDir, parseWorktreeList } from "./git.js";
+import { firstPositiveNumber, maxPositiveNumber, pathModifiedAtMs } from "./path-utils.js";
+import type { CreatedWorktreeChoice, ModifiedWorktreeChoice, ProjectContext, WorktreeChoice, WorktreeListItem, WorktreeRecord } from "./types.js";
+
+export function buildProjectContext(cwd: string): ProjectContext {
+  const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "lt must be run inside a Git worktree.");
+  const commonDir = gitCommonDir(currentRoot);
+  const records = parseWorktreeList(git(["--git-dir", commonDir, "worktree", "list", "--porcelain"], currentRoot));
+  const worktrees = records.filter((record) => !record.bare);
+  const mainRoot = worktrees[0]?.path;
+
+  if (!mainRoot) {
+    throw new CliError("No non-bare worktrees found for this project.");
+  }
+
+  const liveDir = path.join(mainRoot, ".livetree");
+  const srcLink = path.join(liveDir, "src");
+  const stateFile = path.join(liveDir, ".source");
+  const choices = worktrees.map((record, index) => enrichWorktree(record, index === 0));
+
+  return {
+    cwd,
+    currentRoot,
+    commonDir,
+    mainRoot,
+    liveDir,
+    srcLink,
+    stateFile,
+    choices,
+  };
+}
+
+export function worktreeListItemsModifiedNewestFirst(choices: WorktreeChoice[]): WorktreeListItem[] {
+  return worktreesModifiedNewestFirst(choices).map((item) => ({
+    ...item,
+    searchText: worktreeSearchText(item.choice),
+  }));
+}
+
+export function worktreesModifiedNewestFirst(choices: WorktreeChoice[]): ModifiedWorktreeChoice[] {
+  return choices
+    .map((choice) => ({ choice, modifiedAtMs: worktreeModifiedAtMs(choice) }))
+    .sort((left, right) => {
+      if (right.modifiedAtMs !== left.modifiedAtMs) {
+        return right.modifiedAtMs - left.modifiedAtMs;
+      }
+
+      return left.choice.path.localeCompare(right.choice.path);
+    });
+}
+
+export function uninitializedWorktreesNewestFirst(choices: WorktreeChoice[]): WorktreeChoice[] {
+  return worktreesNewestFirst(choices)
+    .map((choice) => choice.choice)
+    .filter((choice) => !isWorktreeInitialized(choice));
+}
+
+export function isWorktreeInitialized(choice: WorktreeChoice): boolean {
+  const liveDir = path.join(choice.path, ".livetree");
+  try {
+    const stats = lstatSync(liveDir);
+    if (stats.isDirectory()) {
+      return true;
+    }
+
+    throw new CliError(`Cannot initialize worktree because .livetree exists and is not a directory: ${liveDir}`);
+  } catch (error) {
+    if (error instanceof CliError) {
+      throw error;
+    }
+
+    return false;
+  }
+}
+
+export function markWorktreeInitialized(choice: WorktreeChoice): void {
+  const liveDir = path.join(choice.path, ".livetree");
+  if (existsSync(liveDir) && !lstatSync(liveDir).isDirectory()) {
+    throw new CliError(`Cannot mark worktree initialized because .livetree is not a directory: ${liveDir}`);
+  }
+
+  mkdirSync(liveDir, { recursive: true });
+  writeFileSync(path.join(liveDir, ".source"), `${choice.path}\n`, "utf8");
+}
+
+function enrichWorktree(record: WorktreeRecord, isMain: boolean): WorktreeChoice {
+  if (isMain) {
+    const ref = refForWorktree(record);
+    return {
+      ...record,
+      isMain,
+      chat: null,
+      ref,
+      label: ref ? `ROOT [${ref}]` : "ROOT",
+    };
+  }
+
+  const chat = codexChatForPath(record.path);
+  const ref = refForWorktree(record);
+  let label: string;
+
+  if (chat?.title && ref) {
+    label = `${chat.title} [${ref}]`;
+  } else if (chat?.title) {
+    label = chat.title;
+  } else if (ref) {
+    label = `[${ref}]`;
+  } else {
+    label = path.basename(record.path);
+  }
+
+  return {
+    ...record,
+    isMain,
+    chat,
+    ref,
+    label,
+  };
+}
+
+function refForWorktree(record: WorktreeRecord): string | null {
+  if (record.branch) {
+    return record.branch;
+  }
+
+  const synced = syncedBranchForPath(record.path);
+  if (synced) {
+    return synced;
+  }
+
+  if (record.head && !/^0+$/.test(record.head)) {
+    return `detached:${record.head.slice(0, 12)}`;
+  }
+
+  return null;
+}
+
+function worktreeModifiedAtMs(choice: WorktreeChoice): number {
+  const rootModifiedAt = pathModifiedAtMs(choice.path);
+  const dirtyModifiedAt = worktreeDirtyModifiedAtMs(choice.path);
+  const commitModifiedAt = worktreeLastCommitAtMs(choice.path);
+  return maxPositiveNumber(rootModifiedAt, dirtyModifiedAt, commitModifiedAt) ?? Number.NEGATIVE_INFINITY;
+}
+
+function worktreeDirtyModifiedAtMs(worktreePath: string): number | null {
+  let output: string;
+  try {
+    output = execFileSync("git", ["-C", worktreePath, "status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+
+  const modifiedTimes = parsePorcelainPaths(output)
+    .map((relativePath) => pathModifiedAtMs(path.join(worktreePath, relativePath)))
+    .filter((value): value is number => value !== null);
+
+  return maxPositiveNumber(...modifiedTimes);
+}
+
+function parsePorcelainPaths(output: string): string[] {
+  const paths: string[] = [];
+  const records = output.split("\0").filter(Boolean);
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    if (record.length < 4) {
+      continue;
+    }
+
+    const status = record.slice(0, 2);
+    const firstPath = record.slice(3);
+    if (firstPath) {
+      paths.push(firstPath);
+    }
+
+    if (status.includes("R") || status.includes("C")) {
+      const secondPath = records[index + 1];
+      if (secondPath) {
+        paths.push(secondPath);
+        index += 1;
+      }
+    }
+  }
+
+  return paths;
+}
+
+function worktreeLastCommitAtMs(worktreePath: string): number | null {
+  let output: string;
+  try {
+    output = execFileSync("git", ["-C", worktreePath, "log", "-1", "--format=%ct"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+
+  const seconds = Number.parseInt(output, 10);
+  return Number.isFinite(seconds) ? seconds * 1000 : null;
+}
+
+function worktreesNewestFirst(choices: WorktreeChoice[]): CreatedWorktreeChoice[] {
+  return choices
+    .map((choice) => ({ choice, createdAtMs: worktreeCreatedAtMs(choice) }))
+    .sort((left, right) => {
+      if (right.createdAtMs !== left.createdAtMs) {
+        return right.createdAtMs - left.createdAtMs;
+      }
+
+      return left.choice.path.localeCompare(right.choice.path);
+    });
+}
+
+function worktreeCreatedAtMs(choice: WorktreeChoice): number {
+  try {
+    const stats = lstatSync(choice.path);
+    return firstPositiveNumber(stats.birthtimeMs, stats.ctimeMs, stats.mtimeMs) ?? Number.NEGATIVE_INFINITY;
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+}
+
+function worktreeSearchText(choice: WorktreeChoice): string {
+  return [
+    choice.label,
+    choice.path,
+    path.basename(choice.path),
+    choice.ref,
+    choice.branch,
+    choice.head,
+    choice.chat?.title,
+    choice.chat?.threadId,
+  ].filter((value): value is string => Boolean(value)).join(" ");
+}
