@@ -26,6 +26,7 @@ export type ProjectContext = {
   liveDir: string;
   srcLink: string;
   stateFile: string;
+  sourceOverride?: string;
   choices: WorktreeChoice[];
 };
 

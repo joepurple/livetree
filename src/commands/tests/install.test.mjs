@@ -24,11 +24,13 @@ test("installTools writes a managed zshrc completion block", async (t) => {
   const contents = readFileSync(zshrc, "utf8");
 
   assert.match(contents, /# >>> livetree completions >>>/);
-  assert.match(contents, /source <\(lt completion zsh\)/);
+  assert.match(contents, /#compdef lt/);
+  assert.match(contents, /command lt __complete selectors/);
+  assert.doesNotMatch(contents, /source <\(lt/);
   assert.match(contents, /# <<< livetree completions <<</);
   assert.match(logs[0], /Installed livetree zsh completion/);
 
-  installTools("tools", { homeDir: home });
+  await captureConsole(() => installTools("tools", { homeDir: home }));
   const afterSecondInstall = readFileSync(zshrc, "utf8");
   assert.equal(afterSecondInstall.match(/# >>> livetree completions >>>/g).length, 1);
 });

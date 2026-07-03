@@ -5,6 +5,10 @@ import { isDanglingSymlink, normalizePath, samePath } from "./path-utils.js";
 import type { LivetreeSourceSnapshot, ProjectContext, WorktreeChoice } from "./types.js";
 
 export function activeSource(context: ProjectContext): string | null {
+  if (context.sourceOverride) {
+    return context.sourceOverride;
+  }
+
   return activeSourceFrom(context.liveDir, context.srcLink, context.stateFile);
 }
 
@@ -31,6 +35,15 @@ export function requireRunnableLivetreeSource(context: ProjectContext): Livetree
 }
 
 export function readRunnableLivetreeSource(context: ProjectContext): LivetreeSourceSnapshot | null {
+  if (context.sourceOverride) {
+    return existsSync(context.sourceOverride)
+      ? {
+          source: context.sourceOverride,
+          key: normalizePath(context.sourceOverride),
+        }
+      : null;
+  }
+
   if (existsSync(context.srcLink) && !lstatSync(context.srcLink).isSymbolicLink()) {
     throw new CliError(`Refusing to run with non-symlink path: ${context.srcLink}`);
   }

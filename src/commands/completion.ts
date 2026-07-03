@@ -1,14 +1,10 @@
 import path from "node:path";
-import { CliError } from "../errors.js";
 import type { ProjectContext, WorktreeChoice } from "../types.js";
 
 const commands = [
   "use",
-  "switch",
-  "switcher",
-  "list",
   "ls",
-  "go",
+  "cd",
   "init",
   "run",
   "watch",
@@ -16,17 +12,11 @@ const commands = [
   "run:",
   "watch:",
   "rm",
-  "remove",
-  "delete",
-  "completion",
+  "install",
 ];
 
-export function printCompletionScript(shell: string): void {
-  if (shell !== "zsh") {
-    throw new CliError("Usage: lt completion zsh");
-  }
-
-  console.log(`#compdef lt
+export function zshCompletionScript(): string {
+  return `#compdef lt
 
 _lt() {
   local -a commands selectors at_selectors
@@ -46,7 +36,7 @@ _lt() {
   fi
 
   case "$words[2]" in
-    use|switch|go|switcher|list|ls)
+    use|cd|ls)
       selectors=("\${(@f)$(command lt __complete selectors "$PREFIX")}")
       compadd -- "\${selectors[@]}"
       ;;
@@ -57,7 +47,7 @@ _lt() {
   esac
 }
 
-compdef _lt lt`);
+compdef _lt lt`;
 }
 
 export function completeSelectors(context: ProjectContext, prefix = ""): string[] {

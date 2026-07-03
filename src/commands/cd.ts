@@ -5,21 +5,21 @@ import { worktreeListItemsModifiedNewestFirst } from "../worktrees.js";
 import { CliError } from "../errors.js";
 import type { ProjectContext, WorktreeChoice } from "../types.js";
 
-type GoToWorktreeOptions = {
+type CdToWorktreeOptions = {
   writePasteboard?: (value: string) => void;
 };
 
-export async function cdToWorktree(context: ProjectContext, query = "", options: GoToWorktreeOptions = {}): Promise<void> {
+export async function cdToWorktree(context: ProjectContext, query = "", options: CdToWorktreeOptions = {}): Promise<void> {
   const active = activeSource(context);
   const items = worktreeListItemsModifiedNewestFirst(context.choices);
-  const target = process.stdin.isTTY ? await selectFromInteractiveWorktreeBrowser({ active, initialQuery: query, items }) : resolveGoTarget(context, query);
+  const target = process.stdin.isTTY ? await selectFromInteractiveWorktreeBrowser({ active, initialQuery: query, items }) : resolveCdTarget(context, query);
   const command = `cd ${shellQuote(target.path)}`;
   const writePasteboard = options.writePasteboard ?? writeMacPasteboard;
   writePasteboard(command);
   process.stderr.write(`Copied to pasteboard: ${command}\n`);
 }
 
-function resolveGoTarget(context: ProjectContext, query: string): WorktreeChoice {
+function resolveCdTarget(context: ProjectContext, query: string): WorktreeChoice {
   const items = filterWorktreeListItems(worktreeListItemsModifiedNewestFirst(context.choices), query);
 
   if (items.length === 1) {

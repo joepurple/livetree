@@ -20,7 +20,7 @@ export async function runConfiguredScript(context: ProjectContext, args: string[
   if (!script) {
     if (options.shortcut) {
       throw new CliError(
-        `Unknown command or run script '${runOptions.scriptName}'. To switch worktrees, use 'lt switch ${args.join(" ")}'.${formatAvailableRunScripts(config)}`,
+        `Unknown command or run script '${runOptions.scriptName}'. To switch worktrees, use 'lt use ${args.join(" ")}'.${formatAvailableRunScripts(config)}`,
       );
     }
 

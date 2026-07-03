@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { completeSelectors, printCompletionScript } from "../../../dist/commands/completion.js";
-import { captureConsole, makeChoice, makeContext, tempDir } from "../../tests/helpers.mjs";
+import { completeSelectors, zshCompletionScript } from "../../../dist/commands/completion.js";
+import { makeChoice, makeContext, tempDir } from "../../tests/helpers.mjs";
 
 test("completeSelectors returns selector candidates matching the prefix", (t) => {
   const root = tempDir("completion-root", t);
@@ -23,10 +23,11 @@ test("completeSelectors returns selector candidates matching the prefix", (t) =>
   assert.ok(completeSelectors(context, root).includes(feature));
 });
 
-test("printCompletionScript emits zsh completion", async () => {
-  const { logs } = await captureConsole(() => printCompletionScript("zsh"));
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /#compdef lt/);
-  assert.match(logs[0], /command lt __complete selectors/);
-  assert.match(logs[0], /compdef _lt lt/);
+test("zshCompletionScript emits zsh completion", () => {
+  const script = zshCompletionScript();
+  assert.match(script, /#compdef lt/);
+  assert.match(script, /command lt __complete selectors/);
+  assert.match(script, /compdef _lt lt/);
+  assert.match(script, /use\|cd\|ls/);
+  assert.doesNotMatch(script, /switcher\|list\|go/);
 });

@@ -2,26 +2,23 @@
 
 import { initWorktree } from "./commands/init.js";
 import { listWorktrees } from "./commands/list.js";
-import { goToWorktree } from "./commands/go.js";
-import { completeSelectors, printCompletionScript } from "./commands/completion.js";
+import { cdToWorktree } from "./commands/cd.js";
+import { completeSelectors } from "./commands/completion.js";
 import { installTools } from "./commands/install.js";
 import { removeWorktrees } from "./commands/remove.js";
 import { runConfiguredScript } from "./commands/run.js";
 import { runShellCommand, watchShellCommand } from "./commands/shell.js";
-import { openWorktreeSwitcher, switchBySelector } from "./commands/switch.js";
+import { contextWithSelectedSource, openWorktreeSwitcher, switchBySelector } from "./commands/switch.js";
 import { CliError } from "./errors.js";
 import { buildProjectContext } from "./worktrees.js";
 
 const usage = `Usage:
   lt
   lt use [selector]
-  lt switch [selector]
   lt @<selector>
-  lt switcher [query]
   lt <script-name> [args...]
-  lt list [query]
   lt ls [query]
-  lt go [query]
+  lt cd [query]
   lt init
   lt run <script-name> [args...]
   lt watch <script-name> [args...]
@@ -29,12 +26,9 @@ const usage = `Usage:
   lt run: <shell-command> [args...]
   lt watch: <shell-command> [args...]
   lt rm
-  lt remove
-  lt delete
-  lt completion zsh
   lt install tools
 
-Use 'lt switch <selector>' to select a worktree by branch name,
+Use 'lt use <selector>' to select a worktree by branch name,
 worktree directory name, commit prefix, path, Codex thread id prefix, or
 Codex chat title fragment.`;
 
@@ -42,11 +36,6 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.length > 0 && ["-h", "--help", "help"].includes(args[0] ?? "")) {
     console.log(usage);
-    return;
-  }
-
-  if (args[0] === "completion") {
-    printCompletionScript(args[1] ?? "");
     return;
   }
 
@@ -74,6 +63,10 @@ async function main(): Promise<void> {
     throw new CliError("No worktrees found for this project.");
   }
 
+  await runProjectCommand(context, args);
+}
+
+async function runProjectCommand(context: ReturnType<typeof buildProjectContext>, args: string[]): Promise<void> {
   if (args[0] === "init") {
     if (args.length > 1) {
       throw new CliError("Usage: lt init");
@@ -83,13 +76,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (["list", "ls"].includes(args[0] ?? "")) {
+  if (args[0] === "ls") {
     await listWorktrees(context, args.slice(1).join(" "));
     return;
   }
 
-  if (args[0] === "go") {
-    await goToWorktree(context, args.slice(1).join(" "));
+  if (args[0] === "cd") {
+    await cdToWorktree(context, args.slice(1).join(" "));
     return;
   }
 
@@ -114,22 +107,29 @@ async function main(): Promise<void> {
   }
 
   if (args[0]?.startsWith("@")) {
-    const selector = [args[0].slice(1), ...args.slice(1)].join(" ");
-    await switchBySelector(context, selector);
+    const selectorParts = args[0].length > 1 ? [args[0].slice(1)] : [];
+    const restStart = selectorParts.length > 0 ? 1 : 2;
+    if (selectorParts.length === 0 && args[1]) {
+      selectorParts.push(args[1]);
+    }
+
+    const selector = selectorParts.join(" ");
+    const rest = args.slice(restStart);
+    if (rest.length === 0) {
+      await switchBySelector(context, selector);
+      return;
+    }
+
+    await runProjectCommand(contextWithSelectedSource(context, selector), rest);
     return;
   }
 
-  if (["use", "switch"].includes(args[0] ?? "")) {
+  if (args[0] === "use") {
     await switchBySelector(context, args.slice(1).join(" "));
     return;
   }
 
-  if (args[0] === "switcher") {
-    await openWorktreeSwitcher(context, args.slice(1).join(" "));
-    return;
-  }
-
-  if (["rm", "remove", "delete"].includes(args[0] ?? "")) {
+  if (args[0] === "rm") {
     if (args.length > 1) {
       throw new CliError("Usage: lt rm");
     }

@@ -803,7 +803,7 @@ function formatInteractiveWorktreeBrowser(options: InteractiveWorktreeBrowserRen
 
 function formatInteractiveWorktreeSwitcher(options: InteractiveWorktreeSwitcherRenderOptions): string[] {
   const { active, ageWidth, filtered, items, query, selectedIndex, status } = options;
-  const lines = ["lt switcher", formatSearchBox(query, selectedIndex, filtered.length, items.length, null)];
+  const lines = ["lt", formatSearchBox(query, selectedIndex, filtered.length, items.length, null)];
   lines.push(dim(status ?? formatSwitcherIdleStatus(active, items), process.stderr));
 
   if (filtered.length === 0) {

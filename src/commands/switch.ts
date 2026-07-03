@@ -48,7 +48,7 @@ export async function selectWorktree(context: ProjectContext): Promise<WorktreeC
   const active = activeSource(context);
 
   if (!process.stdin.isTTY) {
-    throw new CliError(`Choose a worktree with 'lt switch <selector>'. Available worktrees:\n${formatNumberedChoiceList(context.choices, active)}`);
+    throw new CliError(`Choose a worktree with 'lt use <selector>'. Available worktrees:\n${formatNumberedChoiceList(context.choices, active)}`);
   }
 
   const [selected] = await selectFromInteractiveWorktreeList({
@@ -67,6 +67,13 @@ export async function switchBySelector(context: ProjectContext, selector: string
   const trimmed = selector.trim();
   const target = trimmed ? resolveSelector(context, trimmed) : await selectWorktree(context);
   switchSource(context, target);
+}
+
+export function contextWithSelectedSource(context: ProjectContext, selector: string): ProjectContext {
+  return {
+    ...context,
+    sourceOverride: resolveSelector(context, selector).path,
+  };
 }
 
 export async function openWorktreeSwitcher(context: ProjectContext, initialQuery = ""): Promise<void> {
