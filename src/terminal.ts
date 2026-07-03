@@ -75,8 +75,8 @@ export function formatRelativeAge(modifiedAtMs: number): string {
   return `${Math.floor(elapsedDays / 365)}y`;
 }
 
-export function dim(value: string): string {
-  if (!process.stdout.isTTY || process.env.NO_COLOR) {
+export function dim(value: string, stream: NodeJS.WriteStream = process.stdout): string {
+  if (!stream.isTTY || process.env.NO_COLOR) {
     return value;
   }
 

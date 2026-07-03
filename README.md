@@ -23,7 +23,7 @@ lt rm
 
 With no arguments, `lt` opens a searchable picker. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to choose, and Esc to clear or cancel. To switch directly, use `lt switch <selector>` or `lt use <selector>`. Selectors match a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
 
-Use `lt list` or `lt ls` to browse worktrees in the same searchable list UI without switching the active worktree. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title. Add a query to prefill the search box:
+Use `lt list` or `lt ls` to browse worktrees in a searchable list UI without selecting or switching the active worktree. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to scroll, Enter to close, and Esc to clear the search or close an empty search. Add a query to prefill the search box:
 
 ```text
 10m  * Plan push notifications rollout [push-notifs]

@@ -1,5 +1,5 @@
 import { activeSource } from "../source.js";
-import { filterWorktreeListItems, printWorktreeList, selectFromInteractiveWorktreeList } from "../ui.js";
+import { browseInteractiveWorktreeList, filterWorktreeListItems, printWorktreeList } from "../ui.js";
 import { worktreeListItemsModifiedNewestFirst } from "../worktrees.js";
 import type { ProjectContext } from "../types.js";
 
@@ -8,11 +8,10 @@ export async function listWorktrees(context: ProjectContext, query = ""): Promis
   const items = worktreeListItemsModifiedNewestFirst(context.choices);
 
   if (process.stdin.isTTY) {
-    await selectFromInteractiveWorktreeList({
+    await browseInteractiveWorktreeList({
       active,
       initialQuery: query,
       items,
-      multiple: false,
     });
     return;
   }
