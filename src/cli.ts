@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkS
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { parse as parseYaml } from "yaml";
 
 type WorktreeRecord = {
   path: string;
@@ -1097,54 +1098,50 @@ function readLtConfig(context: ProjectContext): LtConfig {
   };
 }
 
-type YamlKeyLine = {
-  indent: number;
-  key: string;
-  value: string;
-};
-
 type ParsedLtConfig = {
   initScript: string | null;
   copyFiles: string[];
   runScripts: Record<string, string>;
 };
 
+type YamlRecord = Record<string, unknown>;
+
 function parseLtConfig(source: string): ParsedLtConfig {
-  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  const parsed = parseLtConfigYaml(source);
   let initScript: string | null = null;
   let copyFiles: string[] = [];
   let runScripts: Record<string, string> = {};
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const parsed = parseYamlKeyLine(lines[index]!);
-    if (!parsed || parsed.indent !== 0) {
+  for (const [key, value] of Object.entries(parsed)) {
+    if (key === "initScript" || key === "initCommand") {
+      initScript = yamlScalarString(value);
       continue;
     }
 
-    if (parsed.key === "initScript" || parsed.key === "initCommand") {
-      initScript = yamlValue(lines, index, parsed);
-      continue;
-    }
-
-    if (parsed.key === "init") {
-      const value = yamlValue(lines, index, parsed);
-      if (value) {
-        initScript = value;
+    if (key === "init") {
+      const scalarValue = yamlScalarString(value);
+      if (scalarValue) {
+        initScript = scalarValue;
         continue;
       }
 
-      initScript = nestedYamlValue(lines, index, parsed.indent, ["script", "command", "run"]);
-      copyFiles = nestedYamlList(lines, index, parsed.indent, ["copy", "copyFiles", "files"]);
+      if (isYamlRecord(value)) {
+        initScript = yamlFirstScalarString(value, ["script", "command", "run"]);
+        copyFiles = yamlFirstStringList(value, ["copy", "copyFiles", "files"]);
+      } else {
+        initScript = null;
+        copyFiles = [];
+      }
       continue;
     }
 
-    if (parsed.key === "scripts") {
-      initScript = nestedYamlValue(lines, index, parsed.indent, ["init"]);
+    if (key === "scripts") {
+      initScript = isYamlRecord(value) ? yamlScalarString(value.init) : null;
       continue;
     }
 
-    if (parsed.key === "run") {
-      runScripts = nestedYamlMapValues(lines, index, parsed.indent);
+    if (key === "run") {
+      runScripts = isYamlRecord(value) ? yamlStringMap(value) : {};
     }
   }
 
@@ -1155,117 +1152,84 @@ function parseLtConfig(source: string): ParsedLtConfig {
   };
 }
 
-function nestedYamlValue(lines: string[], parentIndex: number, parentIndent: number, keys: string[]): string | null {
-  for (let index = parentIndex + 1; index < lines.length; index += 1) {
-    const parsed = parseYamlKeyLine(lines[index]!);
-    if (!parsed) {
-      continue;
-    }
+function parseLtConfigYaml(source: string): YamlRecord {
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(source) ?? {};
+  } catch (error) {
+    throw new CliError(`Invalid .ltconf YAML: ${errorMessage(error)}`);
+  }
 
-    if (parsed.indent <= parentIndent) {
-      return null;
-    }
+  if (!isYamlRecord(parsed)) {
+    throw new CliError(".ltconf must contain a YAML mapping.");
+  }
 
-    if (keys.includes(parsed.key)) {
-      return yamlValue(lines, index, parsed);
+  return parsed;
+}
+
+function yamlFirstScalarString(record: YamlRecord, keys: string[]): string | null {
+  for (const [key, value] of Object.entries(record)) {
+    if (keys.includes(key)) {
+      return yamlScalarString(value);
     }
   }
 
   return null;
 }
 
-function nestedYamlList(lines: string[], parentIndex: number, parentIndent: number, keys: string[]): string[] {
-  for (let index = parentIndex + 1; index < lines.length; index += 1) {
-    const parsed = parseYamlKeyLine(lines[index]!);
-    if (!parsed) {
-      continue;
-    }
-
-    if (parsed.indent <= parentIndent) {
-      return [];
-    }
-
-    if (keys.includes(parsed.key)) {
-      return yamlListValue(lines, index, parsed);
+function yamlFirstStringList(record: YamlRecord, keys: string[]): string[] {
+  for (const [key, value] of Object.entries(record)) {
+    if (keys.includes(key)) {
+      return yamlStringList(value);
     }
   }
 
   return [];
 }
 
-function nestedYamlMapValues(lines: string[], parentIndex: number, parentIndent: number): Record<string, string> {
+function yamlStringMap(record: YamlRecord): Record<string, string> {
   const values: Record<string, string> = {};
-  let childIndent: number | null = null;
 
-  for (let index = parentIndex + 1; index < lines.length; index += 1) {
-    const parsed = parseYamlKeyLine(lines[index]!);
-    if (!parsed) {
-      continue;
-    }
-
-    if (parsed.indent <= parentIndent) {
-      break;
-    }
-
-    childIndent ??= parsed.indent;
-    if (parsed.indent !== childIndent) {
-      continue;
-    }
-
-    const value = yamlValue(lines, index, parsed);
-    if (value) {
-      values[parsed.key] = value;
+  for (const [key, value] of Object.entries(record)) {
+    const scalarValue = yamlScalarString(value);
+    if (scalarValue) {
+      values[key] = scalarValue;
     }
   }
 
   return values;
 }
 
-function yamlValue(lines: string[], index: number, parsed: YamlKeyLine): string | null {
-  if (parsed.value === "|" || parsed.value === ">") {
-    const block = readYamlBlock(lines, index, parsed.indent);
-    return block.trim() ? block : null;
+function yamlStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      const scalarValue = yamlScalarString(item);
+      return scalarValue ? [scalarValue] : [];
+    });
   }
 
-  const value = unquoteYamlScalar(parsed.value);
-  return value.trim() ? value : null;
+  const scalarValue = yamlScalarString(value);
+  return scalarValue ? [scalarValue] : [];
 }
 
-function yamlListValue(lines: string[], index: number, parsed: YamlKeyLine): string[] {
-  const scalarValue = yamlValue(lines, index, parsed);
-  if (scalarValue) {
-    return [scalarValue];
+function yamlScalarString(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value.trim() ? value : null;
   }
 
-  return readYamlList(lines, index, parsed.indent);
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return null;
 }
 
-function readYamlList(lines: string[], parentIndex: number, parentIndent: number): string[] {
-  const values: string[] = [];
+function isYamlRecord(value: unknown): value is YamlRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
-  for (let index = parentIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (line.trim() === "" || line.trimStart().startsWith("#")) {
-      continue;
-    }
-
-    const indent = leadingSpaceCount(line);
-    if (indent <= parentIndent) {
-      break;
-    }
-
-    const match = /^\s*-\s*(.*)$/.exec(line);
-    if (!match) {
-      continue;
-    }
-
-    const value = unquoteYamlScalar(stripInlineYamlComment(match[1]!).trim());
-    if (value) {
-      values.push(value);
-    }
-  }
-
-  return values;
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeCopyFilePaths(paths: string[]): string[] {
@@ -1299,85 +1263,6 @@ function normalizeRunScripts(scripts: Record<string, string>): Record<string, st
   }
 
   return normalized;
-}
-
-function readYamlBlock(lines: string[], parentIndex: number, parentIndent: number): string {
-  const blockLines: string[] = [];
-
-  for (let index = parentIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (line.trim() === "") {
-      blockLines.push(line);
-      continue;
-    }
-
-    const indent = leadingSpaceCount(line);
-    if (indent <= parentIndent) {
-      break;
-    }
-
-    blockLines.push(line);
-  }
-
-  const contentIndent = blockLines
-    .filter((line) => line.trim() !== "")
-    .map(leadingSpaceCount)
-    .reduce((minimum, indent) => Math.min(minimum, indent), Number.POSITIVE_INFINITY);
-
-  if (!Number.isFinite(contentIndent)) {
-    return "";
-  }
-
-  return blockLines.map((line) => (line.trim() === "" ? "" : line.slice(contentIndent))).join("\n").trimEnd();
-}
-
-function parseYamlKeyLine(line: string): YamlKeyLine | null {
-  if (line.trim() === "" || line.trimStart().startsWith("#")) {
-    return null;
-  }
-
-  const match = /^(\s*)([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    indent: match[1]!.length,
-    key: match[2]!,
-    value: stripInlineYamlComment(match[3]!).trim(),
-  };
-}
-
-function stripInlineYamlComment(value: string): string {
-  let quote: "\"" | "'" | null = null;
-
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index]!;
-    if ((char === "\"" || char === "'") && (index === 0 || value[index - 1] !== "\\")) {
-      quote = quote === char ? null : quote ?? char;
-    }
-
-    if (char === "#" && quote === null && (index === 0 || /\s/.test(value[index - 1]!))) {
-      return value.slice(0, index);
-    }
-  }
-
-  return value;
-}
-
-function unquoteYamlScalar(value: string): string {
-  if (
-    (value.startsWith("\"") && value.endsWith("\"")) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
-  }
-
-  return value;
-}
-
-function leadingSpaceCount(line: string): number {
-  return /^ */.exec(line)?.[0].length ?? 0;
 }
 
 async function removeWorktrees(context: ProjectContext): Promise<void> {
