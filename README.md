@@ -13,8 +13,8 @@ lt
 lt use [selector]
 lt switch [selector]
 lt <script-name> [args...]
-lt list
-lt ls
+lt list [query]
+lt ls [query]
 lt init
 lt run <script-name> [args...]
 lt watch <script-name> [args...]
@@ -23,7 +23,7 @@ lt rm
 
 With no arguments, `lt` opens a searchable picker. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to choose, and Esc to clear or cancel. To switch directly, use `lt switch <selector>` or `lt use <selector>`. Selectors match a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
 
-Use `lt list` or `lt ls` to print worktrees newest-modified first:
+Use `lt list` or `lt ls` to browse worktrees in the same searchable list UI without switching the active worktree. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title. Add a query to prefill the search box:
 
 ```text
 10m  * Plan push notifications rollout [push-notifs]
@@ -80,7 +80,7 @@ Any extra arguments after the script name are passed through to the configured c
 lt lt init
 ```
 
-Use `lt rm`, `lt remove`, or `lt delete` to select linked worktrees to remove in the same searchable picker. Tab or Space toggles the highlighted worktree. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `lt` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `lt` prunes the stale Git metadata and asks before deleting the leftover directory.
+Use `lt rm`, `lt remove`, or `lt delete` to select linked worktrees to remove in the same searchable picker. Tab or Space toggles the highlighted worktree. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `lt` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `lt` prunes the stale Git metadata and asks before deleting the leftover directory. When a removed worktree has an associated Codex chat, `lt` archives it with `codex archive`.
 
 Install locally while developing:
 

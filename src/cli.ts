@@ -57,8 +57,8 @@ const usage = `Usage:
   lt use [selector]
   lt switch [selector]
   lt <script-name> [args...]
-  lt list
-  lt ls
+  lt list [query]
+  lt ls [query]
   lt init
   lt run <script-name> [args...]
   lt watch <script-name> [args...]
@@ -92,11 +92,7 @@ async function main(): Promise<void> {
   }
 
   if (["list", "ls"].includes(args[0] ?? "")) {
-    if (args.length > 1) {
-      throw new CliError("Usage: lt list");
-    }
-
-    listWorktrees(context);
+    await listWorktrees(context, args.slice(1).join(" "));
     return;
   }
 
@@ -317,10 +313,29 @@ function switchSource(context: ProjectContext, target: WorktreeChoice): void {
   console.log(`Active: ${target.label}`);
 }
 
-function listWorktrees(context: ProjectContext): void {
+async function listWorktrees(context: ProjectContext, query = ""): Promise<void> {
   const active = activeSource(context);
   const items = worktreeListItemsModifiedNewestFirst(context.choices);
+
+  if (process.stdin.isTTY) {
+    await selectFromInteractiveWorktreeList({
+      active,
+      initialQuery: query,
+      items,
+      multiple: false,
+    });
+    return;
+  }
+
+  printWorktreeList(filterWorktreeListItems(items, query), active, query);
+}
+
+function printWorktreeList(items: WorktreeListItem[], active: string | null, query = ""): void {
   const ageWidth = ageColumnWidth(items);
+
+  if (items.length === 0) {
+    throw new CliError(`No worktrees matched '${query.trim()}'.`);
+  }
 
   for (const item of items) {
     console.log(formatWorktreeListRow(item, active, ageWidth));
@@ -1247,10 +1262,12 @@ async function removeWorktrees(context: ProjectContext): Promise<void> {
 
   const removed: WorktreeChoice[] = [];
   for (const choice of selected) {
+    const threadId = codexThreadIdForChoice(choice);
     const didRemove = await removeGitWorktreeWithForcePrompt(context, choice);
     if (didRemove) {
       removed.push(choice);
       console.log(`Removed: ${choice.label}`);
+      archiveRemovedCodexChat(choice, threadId);
     }
   }
 
@@ -1394,6 +1411,40 @@ function removeGitWorktree(context: ProjectContext, choice: WorktreeChoice, forc
 
     throw new CliError(message);
   }
+}
+
+function codexThreadIdForChoice(choice: WorktreeChoice): string | null {
+  return choice.chat?.threadId || threadIdForPath(choice.path);
+}
+
+function archiveRemovedCodexChat(choice: WorktreeChoice, threadId: string | null): void {
+  if (!threadId) {
+    return;
+  }
+
+  try {
+    execFileSync("codex", ["archive", threadId], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    console.log(`Archived Codex chat: ${choice.chat?.title || threadId}`);
+  } catch (error) {
+    process.stderr.write(`Warning: failed to archive Codex chat ${threadId}: ${commandFailureMessage(error)}\n`);
+  }
+}
+
+function commandFailureMessage(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return errorMessage(error);
+  }
+
+  const stderr = "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "").trim() : "";
+  if (stderr) {
+    return stderr;
+  }
+
+  const stdout = "stdout" in error ? String((error as { stdout?: unknown }).stdout ?? "").trim() : "";
+  return stdout || errorMessage(error);
 }
 
 function isWorktreeNeedsForceError(error: unknown): boolean {
@@ -1636,14 +1687,15 @@ function formatNumberedChoiceList(choices: WorktreeChoice[], active: string | nu
 
 type InteractiveWorktreeListOptions = {
   active: string | null;
+  initialQuery?: string;
   items: WorktreeListItem[];
   multiple: boolean;
 };
 
 function selectFromInteractiveWorktreeList(options: InteractiveWorktreeListOptions): Promise<WorktreeChoice[]> {
-  const { active, items, multiple } = options;
-  let query = "";
-  let selectedIndex = Math.max(0, items.findIndex((item) => active && samePath(item.choice.path, active)));
+  const { active, initialQuery = "", items, multiple } = options;
+  let query = initialQuery.trim();
+  let selectedIndex = query ? 0 : Math.max(0, items.findIndex((item) => active && samePath(item.choice.path, active)));
   const checkedPaths = new Set<string>();
   const ageWidth = ageColumnWidth(items);
 
