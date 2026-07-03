@@ -4,7 +4,8 @@
   "description": "Switch a stable .live-tree/src symlink between Git worktrees.",
   "type": "module",
   "bin": {
-    "treeswitch": "./dist/cli.js"
+    "treeswitch": "./dist/cli.js",
+    "tsw": "./dist/cli.js"
   },
   "files": [
     "dist"
