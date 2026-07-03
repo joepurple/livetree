@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -11,6 +11,7 @@ type WorktreeRecord = {
   head: string | null;
   branch: string | null;
   bare: boolean;
+  prunable: string | null;
 };
 
 type CodexChat = {
@@ -48,9 +49,13 @@ class CliError extends Error {
   }
 }
 
+class WorktreeRemoveNeedsForceError extends CliError {}
+class WorktreeRemovePrunableError extends CliError {}
+
 const usage = `Usage:
   treeswitch
   treeswitch <selector>
+  treeswitch init
   treeswitch rm
   treeswitch remove
   treeswitch delete
@@ -68,6 +73,15 @@ async function main(): Promise<void> {
   const context = buildProjectContext(process.cwd());
   if (context.choices.length === 0) {
     throw new CliError("No worktrees found for this project.");
+  }
+
+  if (args[0] === "init") {
+    if (args.length > 1) {
+      throw new CliError("Usage: treeswitch init");
+    }
+
+    await initWorktree(context);
+    return;
   }
 
   if (["rm", "remove", "delete"].includes(args[0] ?? "")) {
@@ -127,6 +141,7 @@ function parseWorktreeList(output: string): WorktreeRecord[] {
     let head: string | null = null;
     let branch: string | null = null;
     let bare = false;
+    let prunable: string | null = null;
 
     for (const line of block.split("\n")) {
       if (line.startsWith("worktree ")) {
@@ -137,11 +152,13 @@ function parseWorktreeList(output: string): WorktreeRecord[] {
         branch = stripHeadsPrefix(line.slice("branch ".length));
       } else if (line === "bare") {
         bare = true;
+      } else if (line.startsWith("prunable")) {
+        prunable = line.slice("prunable".length).trim() || "prunable";
       }
     }
 
     if (worktreePath) {
-      records.push({ path: worktreePath, head, branch, bare });
+      records.push({ path: worktreePath, head, branch, bare, prunable });
     }
   }
 
@@ -345,6 +362,462 @@ function switchSource(context: ProjectContext, target: WorktreeChoice): void {
   console.log(`Active: ${target.label}`);
 }
 
+async function initWorktree(context: ProjectContext): Promise<void> {
+  const config = readTswConfig(context);
+  const target = await selectInitWorktree(context);
+  console.log(`Using init config: ${config.configPath}`);
+  copyInitFiles(context, target, config.copyFiles);
+  runInitScript(target, config.initScript);
+}
+
+type TswConfig = {
+  initScript: string;
+  copyFiles: string[];
+  configPath: string;
+};
+
+type CreatedWorktreeChoice = {
+  choice: WorktreeChoice;
+  createdAtMs: number;
+};
+
+async function selectInitWorktree(context: ProjectContext): Promise<WorktreeChoice> {
+  const active = activeSource(context);
+  const choices = worktreesNewestFirst(context.choices);
+
+  if (!process.stdin.isTTY) {
+    throw new CliError(`Choose a worktree to initialize from an interactive terminal:\n${formatNumberedCreatedChoiceList(choices, active)}`);
+  }
+
+  let selectedIndex = 0;
+
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    let renderedLines = 0;
+
+    const cleanup = (): void => {
+      stdin.off("keypress", onKeypress);
+      if (stdin.isTTY) {
+        stdin.setRawMode(false);
+      }
+      stdin.pause();
+    };
+
+    const render = (): void => {
+      const lines = [
+        "Select worktree to initialize",
+        "Newest worktrees first. Use Up/Down, j/k, Enter to choose, q to cancel.",
+        "",
+      ];
+
+      for (let index = 0; index < choices.length; index += 1) {
+        const item = choices[index]!;
+        const line = formatCreatedChoiceLabel(item, active);
+        lines.push(index === selectedIndex ? `\x1b[7m> ${line}\x1b[0m` : `  ${line}`);
+      }
+
+      writeInlineBlock(lines, renderedLines);
+      renderedLines = lines.length;
+    };
+
+    const finish = (): void => {
+      cleanup();
+      resolve(choices[selectedIndex]!.choice);
+    };
+
+    const cancel = (): void => {
+      cleanup();
+      process.stderr.write("Canceled.\n");
+      reject(new CliError("Canceled."));
+    };
+
+    const onKeypress = (value: string, key: readline.Key): void => {
+      if (key.ctrl && key.name === "c") {
+        cancel();
+        return;
+      }
+
+      switch (key.name ?? value) {
+        case "return":
+        case "enter":
+          finish();
+          return;
+        case "q":
+          cancel();
+          return;
+        case "up":
+        case "k":
+          selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : choices.length - 1;
+          render();
+          return;
+        case "down":
+        case "j":
+          selectedIndex = (selectedIndex + 1) % choices.length;
+          render();
+          return;
+        default:
+          return;
+      }
+    };
+
+    readline.emitKeypressEvents(stdin);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("keypress", onKeypress);
+    render();
+  });
+}
+
+function worktreesNewestFirst(choices: WorktreeChoice[]): CreatedWorktreeChoice[] {
+  return choices
+    .map((choice) => ({ choice, createdAtMs: worktreeCreatedAtMs(choice) }))
+    .sort((left, right) => {
+      if (right.createdAtMs !== left.createdAtMs) {
+        return right.createdAtMs - left.createdAtMs;
+      }
+
+      return left.choice.path.localeCompare(right.choice.path);
+    });
+}
+
+function worktreeCreatedAtMs(choice: WorktreeChoice): number {
+  try {
+    const stats = lstatSync(choice.path);
+    return firstPositiveNumber(stats.birthtimeMs, stats.ctimeMs, stats.mtimeMs) ?? Number.NEGATIVE_INFINITY;
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+}
+
+function firstPositiveNumber(...values: number[]): number | null {
+  for (const value of values) {
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function formatNumberedCreatedChoiceList(choices: CreatedWorktreeChoice[], active: string | null): string {
+  return choices.map((choice, index) => `  ${index + 1}. ${formatCreatedChoiceLabel(choice, active)}`).join("\n");
+}
+
+function formatCreatedChoiceLabel(choice: CreatedWorktreeChoice, active: string | null): string {
+  return `${formatChoiceLabel(choice.choice, active)}  ${formatCreatedAt(choice.createdAtMs)}  ${choice.choice.path}`;
+}
+
+function formatCreatedAt(createdAtMs: number): string {
+  if (!Number.isFinite(createdAtMs)) {
+    return "created unknown";
+  }
+
+  const value = new Date(createdAtMs);
+  return `created ${value.toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  })}`;
+}
+
+function runInitScript(target: WorktreeChoice, script: string): void {
+  console.log(`Running init in ${target.path}`);
+  const result = spawnSync(script, {
+    cwd: target.path,
+    env: process.env,
+    shell: true,
+    stdio: "inherit",
+  });
+
+  if (result.error) {
+    throw new CliError(`Init script failed to start: ${result.error.message}`);
+  }
+
+  if (result.signal) {
+    throw new CliError(`Init script terminated by signal ${result.signal}.`);
+  }
+
+  if (result.status && result.status !== 0) {
+    throw new CliError(`Init script exited with status ${result.status}.`, result.status);
+  }
+}
+
+function copyInitFiles(context: ProjectContext, target: WorktreeChoice, copyFiles: string[]): void {
+  if (copyFiles.length === 0) {
+    return;
+  }
+
+  console.log(`Copying ${copyFiles.length} init file${copyFiles.length === 1 ? "" : "s"}`);
+  for (const relativePath of copyFiles) {
+    const sourcePath = path.join(context.mainRoot, relativePath);
+    const targetPath = path.join(target.path, relativePath);
+
+    if (samePath(sourcePath, targetPath)) {
+      console.log(`skipped ${relativePath} (source and target are the same)`);
+      continue;
+    }
+
+    if (!existsSync(sourcePath)) {
+      console.log(`missing ${relativePath}`);
+      continue;
+    }
+
+    if (!lstatSync(sourcePath).isFile()) {
+      throw new CliError(`Init copy path is not a file: ${relativePath}`);
+    }
+
+    mkdirSync(path.dirname(targetPath), { recursive: true });
+    copyFileSync(sourcePath, targetPath);
+    console.log(`copied ${relativePath}`);
+  }
+}
+
+function readTswConfig(context: ProjectContext): TswConfig {
+  const configPath = path.join(context.mainRoot, ".tswconf");
+  if (!existsSync(configPath)) {
+    throw new CliError(`No .tswconf found at ${configPath}.\n\nAdd one like:\ninit:\n  script: pnpm install`);
+  }
+
+  const config = parseTswConfig(readFileSync(configPath, "utf8"));
+  if (!config.initScript) {
+    throw new CliError(
+      `.tswconf must define an init script.\n\nSupported examples:\ninit:\n  copy:\n    - modules/api/.env\n  script: pnpm install\n\ninit:\n  script: |\n    corepack enable\n    pnpm install`,
+    );
+  }
+
+  return {
+    configPath,
+    initScript: config.initScript,
+    copyFiles: normalizeCopyFilePaths(config.copyFiles),
+  };
+}
+
+type YamlKeyLine = {
+  indent: number;
+  key: string;
+  value: string;
+};
+
+type ParsedTswConfig = {
+  initScript: string | null;
+  copyFiles: string[];
+};
+
+function parseTswConfig(source: string): ParsedTswConfig {
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  let initScript: string | null = null;
+  let copyFiles: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const parsed = parseYamlKeyLine(lines[index]!);
+    if (!parsed || parsed.indent !== 0) {
+      continue;
+    }
+
+    if (parsed.key === "initScript" || parsed.key === "initCommand") {
+      initScript = yamlValue(lines, index, parsed);
+      continue;
+    }
+
+    if (parsed.key === "init") {
+      const value = yamlValue(lines, index, parsed);
+      if (value) {
+        initScript = value;
+        continue;
+      }
+
+      initScript = nestedYamlValue(lines, index, parsed.indent, ["script", "command", "run"]);
+      copyFiles = nestedYamlList(lines, index, parsed.indent, ["copy", "copyFiles", "files"]);
+      continue;
+    }
+
+    if (parsed.key === "scripts") {
+      initScript = nestedYamlValue(lines, index, parsed.indent, ["init"]);
+    }
+  }
+
+  return {
+    initScript,
+    copyFiles,
+  };
+}
+
+function nestedYamlValue(lines: string[], parentIndex: number, parentIndent: number, keys: string[]): string | null {
+  for (let index = parentIndex + 1; index < lines.length; index += 1) {
+    const parsed = parseYamlKeyLine(lines[index]!);
+    if (!parsed) {
+      continue;
+    }
+
+    if (parsed.indent <= parentIndent) {
+      return null;
+    }
+
+    if (keys.includes(parsed.key)) {
+      return yamlValue(lines, index, parsed);
+    }
+  }
+
+  return null;
+}
+
+function nestedYamlList(lines: string[], parentIndex: number, parentIndent: number, keys: string[]): string[] {
+  for (let index = parentIndex + 1; index < lines.length; index += 1) {
+    const parsed = parseYamlKeyLine(lines[index]!);
+    if (!parsed) {
+      continue;
+    }
+
+    if (parsed.indent <= parentIndent) {
+      return [];
+    }
+
+    if (keys.includes(parsed.key)) {
+      return yamlListValue(lines, index, parsed);
+    }
+  }
+
+  return [];
+}
+
+function yamlValue(lines: string[], index: number, parsed: YamlKeyLine): string | null {
+  if (parsed.value === "|" || parsed.value === ">") {
+    const block = readYamlBlock(lines, index, parsed.indent);
+    return block.trim() ? block : null;
+  }
+
+  const value = unquoteYamlScalar(parsed.value);
+  return value.trim() ? value : null;
+}
+
+function yamlListValue(lines: string[], index: number, parsed: YamlKeyLine): string[] {
+  const scalarValue = yamlValue(lines, index, parsed);
+  if (scalarValue) {
+    return [scalarValue];
+  }
+
+  return readYamlList(lines, index, parsed.indent);
+}
+
+function readYamlList(lines: string[], parentIndex: number, parentIndent: number): string[] {
+  const values: string[] = [];
+
+  for (let index = parentIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.trim() === "" || line.trimStart().startsWith("#")) {
+      continue;
+    }
+
+    const indent = leadingSpaceCount(line);
+    if (indent <= parentIndent) {
+      break;
+    }
+
+    const match = /^\s*-\s*(.*)$/.exec(line);
+    if (!match) {
+      continue;
+    }
+
+    const value = unquoteYamlScalar(stripInlineYamlComment(match[1]!).trim());
+    if (value) {
+      values.push(value);
+    }
+  }
+
+  return values;
+}
+
+function normalizeCopyFilePaths(paths: string[]): string[] {
+  return paths.map((value) => {
+    const trimmed = value.trim();
+    const normalized = path.normalize(trimmed);
+
+    if (!trimmed || path.isAbsolute(trimmed) || normalized === "." || normalized.split(path.sep).includes("..")) {
+      throw new CliError(`Init copy paths must be relative files inside the project: ${value}`);
+    }
+
+    return normalized;
+  });
+}
+
+function readYamlBlock(lines: string[], parentIndex: number, parentIndent: number): string {
+  const blockLines: string[] = [];
+
+  for (let index = parentIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.trim() === "") {
+      blockLines.push(line);
+      continue;
+    }
+
+    const indent = leadingSpaceCount(line);
+    if (indent <= parentIndent) {
+      break;
+    }
+
+    blockLines.push(line);
+  }
+
+  const contentIndent = blockLines
+    .filter((line) => line.trim() !== "")
+    .map(leadingSpaceCount)
+    .reduce((minimum, indent) => Math.min(minimum, indent), Number.POSITIVE_INFINITY);
+
+  if (!Number.isFinite(contentIndent)) {
+    return "";
+  }
+
+  return blockLines.map((line) => (line.trim() === "" ? "" : line.slice(contentIndent))).join("\n").trimEnd();
+}
+
+function parseYamlKeyLine(line: string): YamlKeyLine | null {
+  if (line.trim() === "" || line.trimStart().startsWith("#")) {
+    return null;
+  }
+
+  const match = /^(\s*)([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    indent: match[1]!.length,
+    key: match[2]!,
+    value: stripInlineYamlComment(match[3]!).trim(),
+  };
+}
+
+function stripInlineYamlComment(value: string): string {
+  let quote: "\"" | "'" | null = null;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    if ((char === "\"" || char === "'") && (index === 0 || value[index - 1] !== "\\")) {
+      quote = quote === char ? null : quote ?? char;
+    }
+
+    if (char === "#" && quote === null && (index === 0 || /\s/.test(value[index - 1]!))) {
+      return value.slice(0, index);
+    }
+  }
+
+  return value;
+}
+
+function unquoteYamlScalar(value: string): string {
+  if (
+    (value.startsWith("\"") && value.endsWith("\"")) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+
+  return value;
+}
+
+function leadingSpaceCount(line: string): number {
+  return /^ */.exec(line)?.[0].length ?? 0;
+}
+
 async function removeWorktrees(context: ProjectContext): Promise<void> {
   const candidates = context.choices.filter((choice) => !choice.isMain);
   const active = activeSource(context);
@@ -369,9 +842,11 @@ async function removeWorktrees(context: ProjectContext): Promise<void> {
 
   const removed: WorktreeChoice[] = [];
   for (const choice of selected) {
-    removeGitWorktree(context, choice);
-    removed.push(choice);
-    console.log(`Removed: ${choice.label}`);
+    const didRemove = await removeGitWorktreeWithForcePrompt(context, choice);
+    if (didRemove) {
+      removed.push(choice);
+      console.log(`Removed: ${choice.label}`);
+    }
   }
 
   const clearedSources = clearRemovedActiveSources(context, removed);
@@ -483,8 +958,18 @@ async function confirmRemoveWorktrees(choices: WorktreeChoice[]): Promise<boolea
     process.stderr.write(`    ${choice.path}\n`);
   }
 
-  const answer = await askQuestion(`\nType "delete" to remove ${choices.length} worktree${choices.length === 1 ? "" : "s"}: `);
-  return answer.trim() === "delete";
+  const answer = await askQuestion(`\nRemove ${choices.length} worktree${choices.length === 1 ? "" : "s"}? [y/n] `);
+  return ["y", "yes"].includes(answer.trim().toLowerCase());
+}
+
+async function confirmForceRemoveWorktree(choice: WorktreeChoice): Promise<boolean> {
+  const answer = await askQuestion(`Force remove ${choice.label} and delete all changes in that worktree? [y/n] `);
+  return ["y", "yes"].includes(answer.trim().toLowerCase());
+}
+
+async function confirmDeletePrunableWorktreeDirectory(choice: WorktreeChoice): Promise<boolean> {
+  const answer = await askQuestion(`Delete leftover directory for ${choice.label}? [y/n] `);
+  return ["y", "yes"].includes(answer.trim().toLowerCase());
 }
 
 function askQuestion(prompt: string): Promise<string> {
@@ -501,16 +986,105 @@ function askQuestion(prompt: string): Promise<string> {
   });
 }
 
-function removeGitWorktree(context: ProjectContext, choice: WorktreeChoice): void {
+async function removeGitWorktreeWithForcePrompt(context: ProjectContext, choice: WorktreeChoice): Promise<boolean> {
   try {
-    execFileSync("git", ["worktree", "remove", choice.path], {
+    if (choice.prunable) {
+      throw new WorktreeRemovePrunableError(`Git marks ${choice.label} as prunable: ${choice.prunable}`);
+    }
+
+    removeGitWorktree(context, choice, false);
+    return true;
+  } catch (error) {
+    if (error instanceof WorktreeRemovePrunableError) {
+      return removePrunableWorktree(context, choice, error.message);
+    }
+
+    if (!(error instanceof WorktreeRemoveNeedsForceError)) {
+      throw error;
+    }
+
+    process.stderr.write(`${error.message}\n`);
+    const confirmed = await confirmForceRemoveWorktree(choice);
+    if (!confirmed) {
+      console.log(`Skipped: ${choice.label}`);
+      return false;
+    }
+
+    removeGitWorktree(context, choice, true);
+    return true;
+  }
+}
+
+async function removePrunableWorktree(context: ProjectContext, choice: WorktreeChoice, reason: string): Promise<boolean> {
+  process.stderr.write(`${reason}\n`);
+  pruneGitWorktrees(context);
+
+  if (!existsSync(choice.path)) {
+    console.log(`Pruned stale worktree metadata: ${choice.label}`);
+    return true;
+  }
+
+  const gitFile = path.join(choice.path, ".git");
+  if (existsSync(gitFile)) {
+    console.log(`Pruned stale worktree metadata: ${choice.label}`);
+    console.log(`Left directory in place because it now contains a .git file: ${choice.path}`);
+    return true;
+  }
+
+  const confirmed = await confirmDeletePrunableWorktreeDirectory(choice);
+  if (!confirmed) {
+    console.log(`Pruned stale worktree metadata: ${choice.label}`);
+    console.log(`Left directory in place: ${choice.path}`);
+    return true;
+  }
+
+  rmSync(choice.path, { recursive: true, force: true });
+  console.log(`Deleted leftover directory: ${choice.path}`);
+  return true;
+}
+
+function pruneGitWorktrees(context: ProjectContext): void {
+  try {
+    execFileSync("git", ["worktree", "prune", "--expire", "now"], {
       cwd: context.mainRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (error) {
-    throw new CliError(formatGitFailure(error, `git worktree remove ${choice.path}`));
+    throw new CliError(formatGitFailure(error, "git worktree prune --expire now"));
   }
+}
+
+function removeGitWorktree(context: ProjectContext, choice: WorktreeChoice, force: boolean): void {
+  const args = force ? ["worktree", "remove", "--force", choice.path] : ["worktree", "remove", choice.path];
+  try {
+    execFileSync("git", args, {
+      cwd: context.mainRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const message = formatGitFailure(error, `git ${args.join(" ")}`);
+    if (!force && isWorktreeNeedsForceError(error)) {
+      throw new WorktreeRemoveNeedsForceError(message);
+    }
+
+    if (!force && isWorktreePrunableError(error)) {
+      throw new WorktreeRemovePrunableError(message);
+    }
+
+    throw new CliError(message);
+  }
+}
+
+function isWorktreeNeedsForceError(error: unknown): boolean {
+  const output = error && typeof error === "object" && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "") : "";
+  return output.includes("contains modified or untracked files") && output.includes("--force");
+}
+
+function isWorktreePrunableError(error: unknown): boolean {
+  const output = error && typeof error === "object" && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "") : "";
+  return output.includes("validation failed, cannot remove working tree") && output.includes(".git") && output.includes("does not exist");
 }
 
 function formatGitFailure(error: unknown, command: string): string {
