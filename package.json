@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
+    "test": "npm run build && node --test --experimental-test-coverage $(find src -path '*/tests/*.test.mjs' -print)",
     "link": "npm run build && npm link"
   },
   "devDependencies": {
