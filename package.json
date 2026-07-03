@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "prepare": "npm run build"
+    "link": "npm run build && npm link"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

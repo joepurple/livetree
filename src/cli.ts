@@ -54,7 +54,9 @@ class WorktreeRemovePrunableError extends CliError {}
 
 const usage = `Usage:
   livetree
-  livetree <selector>
+  livetree use [selector]
+  livetree switch [selector]
+  livetree <script-name> [args...]
   livetree list
   livetree ls
   livetree init
@@ -64,8 +66,9 @@ const usage = `Usage:
   livetree remove
   livetree delete
 
-Selectors can be a branch name, worktree directory name, commit prefix, path,
-Codex thread id prefix, or Codex chat title fragment.`;
+Use 'livetree switch <selector>' to select a worktree by branch name,
+worktree directory name, commit prefix, path, Codex thread id prefix, or
+Codex chat title fragment.`;
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -107,6 +110,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (["use", "switch"].includes(args[0] ?? "")) {
+    const selector = args.slice(1).join(" ").trim();
+    const target = selector ? resolveSelector(context, selector) : await selectWorktree(context);
+    switchSource(context, target);
+    return;
+  }
+
   if (["rm", "remove", "delete"].includes(args[0] ?? "")) {
     if (args.length > 1) {
       throw new CliError("Usage: livetree rm");
@@ -116,8 +126,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const selector = args.join(" ").trim();
-  const target = selector ? resolveSelector(context, selector) : await selectWorktree(context);
+  if (args.length > 0) {
+    await runConfiguredScript(context, args, false, { shortcut: true });
+    return;
+  }
+
+  const target = await selectWorktree(context);
   switchSource(context, target);
 }
 
@@ -271,7 +285,7 @@ async function selectWorktree(context: ProjectContext): Promise<WorktreeChoice> 
   const active = activeSource(context);
 
   if (!process.stdin.isTTY) {
-    throw new CliError(`Choose a worktree by passing one of these selectors:\n${formatNumberedChoiceList(context.choices, active)}`);
+    throw new CliError(`Choose a worktree with 'livetree switch <selector>'. Available worktrees:\n${formatNumberedChoiceList(context.choices, active)}`);
   }
 
   const [selected] = await selectFromInteractiveWorktreeList({
@@ -507,6 +521,10 @@ type RunOptions = {
   scriptArgs: string[];
 };
 
+type RunConfiguredScriptOptions = {
+  shortcut?: boolean;
+};
+
 type LivetreeSourceSnapshot = {
   source: string;
   key: string;
@@ -643,39 +661,46 @@ function copyInitFiles(context: ProjectContext, target: WorktreeChoice, copyFile
   }
 }
 
-async function runConfiguredScript(context: ProjectContext, args: string[], watch: boolean): Promise<void> {
+async function runConfiguredScript(context: ProjectContext, args: string[], watch: boolean, options: RunConfiguredScriptOptions = {}): Promise<void> {
   const command = watch ? "watch" : "run";
-  const options = parseRunArgs(args, command);
+  const usageLine = options.shortcut ? "livetree <script-name> [args...]" : `livetree ${command} <script-name> [args...]`;
+  const runOptions = parseRunArgs(args, command, usageLine, !options.shortcut);
   const config = readLtConfig(context);
 
-  if (!options.scriptName) {
-    throw new CliError(`Usage: livetree ${command} <script-name> [args...]${formatAvailableRunScripts(config)}`);
+  if (!runOptions.scriptName) {
+    throw new CliError(`Usage: ${usageLine}${formatAvailableRunScripts(config)}`);
   }
 
-  const script = config.runScripts[options.scriptName];
+  const script = config.runScripts[runOptions.scriptName];
   if (!script) {
-    throw new CliError(`No run script named '${options.scriptName}' in ${config.configPath}.${formatAvailableRunScripts(config)}`);
+    if (options.shortcut) {
+      throw new CliError(
+        `Unknown command or run script '${runOptions.scriptName}'. To switch worktrees, use 'livetree switch ${args.join(" ")}'.${formatAvailableRunScripts(config)}`,
+      );
+    }
+
+    throw new CliError(`No run script named '${runOptions.scriptName}' in ${config.configPath}.${formatAvailableRunScripts(config)}`);
   }
 
   if (watch) {
-    await runWatchedScript(context, options.scriptName, script, options.scriptArgs);
+    await runWatchedScript(context, runOptions.scriptName, script, runOptions.scriptArgs);
   } else {
-    runScriptOnce(context, options.scriptName, script, options.scriptArgs);
+    runScriptOnce(context, runOptions.scriptName, script, runOptions.scriptArgs);
   }
 }
 
-function parseRunArgs(args: string[], command: "run" | "watch"): RunOptions {
+function parseRunArgs(args: string[], command: "run" | "watch", usageLine: string, allowStaticOption: boolean): RunOptions {
   let scriptName: string | null = null;
   const scriptArgs: string[] = [];
 
   for (const arg of args) {
     if (!scriptName) {
-      if (command === "run" && arg === "--static") {
+      if (allowStaticOption && command === "run" && arg === "--static") {
         continue;
       }
 
       if (arg.startsWith("-")) {
-        throw new CliError(`Unknown ${command} option: ${arg}\n\nUsage: livetree ${command} <script-name> [args...]`);
+        throw new CliError(`Unknown option: ${arg}\n\nUsage: ${usageLine}`);
       }
 
       scriptName = arg;

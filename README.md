@@ -10,7 +10,9 @@ Run it from any worktree that belongs to the project.
 
 ```sh
 livetree
-livetree <selector>
+livetree use [selector]
+livetree switch [selector]
+livetree <script-name> [args...]
 livetree list
 livetree ls
 livetree init
@@ -21,7 +23,7 @@ livetree rm
 
 `lt` is installed as a shorthand for the same command.
 
-With no selector, `livetree` opens a searchable picker. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to choose, and Esc to clear or cancel. With a selector, it matches a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
+With no arguments, `livetree` opens a searchable picker. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to choose, and Esc to clear or cancel. To switch directly, use `livetree switch <selector>` or `lt use <selector>`. Selectors match a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
 
 Use `livetree list` or `lt ls` to print worktrees newest-modified first:
 
@@ -66,7 +68,7 @@ run:
   mobile: cd src/modules/mobile && pnpm start
 ```
 
-Run them once with `livetree run api` or `lt run api`. Run scripts start in `<main-worktree>/.livetree`, so paths should go through `src/...`.
+Run them once with `livetree api`, `lt api`, `livetree run api`, or `lt run api`. Built-in commands take precedence over run script shortcuts. Run scripts start in `<main-worktree>/.livetree`, so paths should go through `src/...`.
 
 Use `livetree watch api` or `lt watch api` to keep a script tied to the live worktree. `livetree` watches `.livetree/src`; when you switch the active worktree, it stops the current process tree and starts the script again against the new target:
 
@@ -77,7 +79,7 @@ lt watch web
 Any extra arguments after the script name are passed through to the configured command:
 
 ```sh
-lt run lt init
+lt lt init
 ```
 
 Use `livetree rm`, `livetree remove`, or `livetree delete` to select linked worktrees to remove in the same searchable picker. Tab or Space toggles the highlighted worktree. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `livetree` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `livetree` prunes the stale Git metadata and asks before deleting the leftover directory.
