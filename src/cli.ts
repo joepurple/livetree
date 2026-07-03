@@ -150,12 +150,13 @@ function parseWorktreeList(output: string): WorktreeRecord[] {
 
 function enrichWorktree(record: WorktreeRecord, isMain: boolean): WorktreeChoice {
   if (isMain) {
+    const ref = refForWorktree(record);
     return {
       ...record,
       isMain,
       chat: null,
-      ref: record.branch,
-      label: "MAIN",
+      ref,
+      label: ref ? `ROOT [${ref}]` : "ROOT",
     };
   }
 
@@ -349,7 +350,7 @@ async function removeWorktrees(context: ProjectContext): Promise<void> {
   const active = activeSource(context);
 
   if (candidates.length === 0) {
-    throw new CliError("No removable worktrees found. MAIN cannot be removed by treeswitch.");
+    throw new CliError("No removable worktrees found. ROOT cannot be removed by treeswitch.");
   }
 
   if (!process.stdin.isTTY) {
