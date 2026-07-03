@@ -53,20 +53,20 @@ class WorktreeRemoveNeedsForceError extends CliError {}
 class WorktreeRemovePrunableError extends CliError {}
 
 const usage = `Usage:
-  livetree
-  livetree use [selector]
-  livetree switch [selector]
-  livetree <script-name> [args...]
-  livetree list
-  livetree ls
-  livetree init
-  livetree run <script-name> [args...]
-  livetree watch <script-name> [args...]
-  livetree rm
-  livetree remove
-  livetree delete
+  lt
+  lt use [selector]
+  lt switch [selector]
+  lt <script-name> [args...]
+  lt list
+  lt ls
+  lt init
+  lt run <script-name> [args...]
+  lt watch <script-name> [args...]
+  lt rm
+  lt remove
+  lt delete
 
-Use 'livetree switch <selector>' to select a worktree by branch name,
+Use 'lt switch <selector>' to select a worktree by branch name,
 worktree directory name, commit prefix, path, Codex thread id prefix, or
 Codex chat title fragment.`;
 
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
 
   if (args[0] === "init") {
     if (args.length > 1) {
-      throw new CliError("Usage: livetree init");
+      throw new CliError("Usage: lt init");
     }
 
     await initWorktree(context);
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
 
   if (["list", "ls"].includes(args[0] ?? "")) {
     if (args.length > 1) {
-      throw new CliError("Usage: livetree list");
+      throw new CliError("Usage: lt list");
     }
 
     listWorktrees(context);
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
 
   if (["rm", "remove", "delete"].includes(args[0] ?? "")) {
     if (args.length > 1) {
-      throw new CliError("Usage: livetree rm");
+      throw new CliError("Usage: lt rm");
     }
 
     await removeWorktrees(context);
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
 }
 
 function buildProjectContext(cwd: string): ProjectContext {
-  const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "livetree must be run inside a Git worktree.");
+  const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "lt must be run inside a Git worktree.");
   const commonDir = gitCommonDir(currentRoot);
   const records = parseWorktreeList(git(["--git-dir", commonDir, "worktree", "list", "--porcelain"], currentRoot));
   const worktrees = records.filter((record) => !record.bare);
@@ -285,7 +285,7 @@ async function selectWorktree(context: ProjectContext): Promise<WorktreeChoice> 
   const active = activeSource(context);
 
   if (!process.stdin.isTTY) {
-    throw new CliError(`Choose a worktree with 'livetree switch <selector>'. Available worktrees:\n${formatNumberedChoiceList(context.choices, active)}`);
+    throw new CliError(`Choose a worktree with 'lt switch <selector>'. Available worktrees:\n${formatNumberedChoiceList(context.choices, active)}`);
   }
 
   const [selected] = await selectFromInteractiveWorktreeList({
@@ -663,7 +663,7 @@ function copyInitFiles(context: ProjectContext, target: WorktreeChoice, copyFile
 
 async function runConfiguredScript(context: ProjectContext, args: string[], watch: boolean, options: RunConfiguredScriptOptions = {}): Promise<void> {
   const command = watch ? "watch" : "run";
-  const usageLine = options.shortcut ? "livetree <script-name> [args...]" : `livetree ${command} <script-name> [args...]`;
+  const usageLine = options.shortcut ? "lt <script-name> [args...]" : `lt ${command} <script-name> [args...]`;
   const runOptions = parseRunArgs(args, command, usageLine, !options.shortcut);
   const config = readLtConfig(context);
 
@@ -675,7 +675,7 @@ async function runConfiguredScript(context: ProjectContext, args: string[], watc
   if (!script) {
     if (options.shortcut) {
       throw new CliError(
-        `Unknown command or run script '${runOptions.scriptName}'. To switch worktrees, use 'livetree switch ${args.join(" ")}'.${formatAvailableRunScripts(config)}`,
+        `Unknown command or run script '${runOptions.scriptName}'. To switch worktrees, use 'lt switch ${args.join(" ")}'.${formatAvailableRunScripts(config)}`,
       );
     }
 
@@ -1228,7 +1228,7 @@ async function removeWorktrees(context: ProjectContext): Promise<void> {
   const active = activeSource(context);
 
   if (candidates.length === 0) {
-    throw new CliError("No removable worktrees found. ROOT cannot be removed by livetree.");
+    throw new CliError("No removable worktrees found. ROOT cannot be removed by lt.");
   }
 
   if (!process.stdin.isTTY) {
