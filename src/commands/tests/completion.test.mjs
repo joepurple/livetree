@@ -13,7 +13,7 @@ test("completeSelectors returns selector candidates matching the prefix", (t) =>
       path: feature,
       branch: "feature",
       head: "abcdef1234567890",
-      chat: { title: "Build Search", threadId: "thread-feature" },
+      chat: { provider: "claude", id: "thread-feature", title: "Build Search" },
     }),
     makeChoice({ path: path.join(root, "web-worktree"), branch: "web" }),
   ]);

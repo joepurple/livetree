@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { claudeMetadataForPaths } from "./claude.js";
 import { codexMetadataForPaths } from "./codex.js";
 import { CliError } from "./errors.js";
 import { git, gitCommonDir, parseWorktreeList } from "./git.js";
@@ -104,15 +105,21 @@ export function markWorktreeInitialized(choice: WorktreeChoice): void {
 }
 
 function enrichWorktrees(records: WorktreeRecord[], commonDir: string, cwd: string): WorktreeChoice[] {
-  const codexMetadata = codexMetadataForPaths(records.map((record) => record.path));
+  const worktreePaths = records.map((record) => record.path);
+  const codexMetadata = codexMetadataForPaths(worktreePaths);
+  const claudeMetadata = claudeMetadataForPaths(worktreePaths);
   const commitTimes = worktreeLastCommitTimesByHead(records, commonDir, cwd);
 
   return records.map((record, index) => {
-    const metadata = codexMetadata.get(record.path);
+    const codex = codexMetadata.get(record.path);
+    const chats = [
+      ...(codex?.chats ?? []),
+      ...(claudeMetadata.get(record.path)?.chats ?? []),
+    ].sort((left, right) => (right.updatedAtMs ?? 0) - (left.updatedAtMs ?? 0));
     return enrichWorktree(record, index === 0, {
-      chat: metadata?.chat ?? null,
-      chats: metadata?.chats ?? [],
-      syncedBranch: metadata?.syncedBranch ?? null,
+      chat: chats[0] ?? null,
+      chats,
+      syncedBranch: codex?.syncedBranch ?? null,
       lastCommitAtMs: record.head ? (commitTimes.get(record.head) ?? null) : null,
     });
   });
@@ -304,6 +311,6 @@ function worktreeSearchText(choice: WorktreeChoice): string {
     choice.ref,
     choice.branch,
     choice.head,
-    ...choice.chats.flatMap((chat) => [chat.title, chat.threadId]),
+    ...choice.chats.flatMap((chat) => [chat.title, chat.id, chat.provider]),
   ].filter((value): value is string => Boolean(value)).join(" ");
 }

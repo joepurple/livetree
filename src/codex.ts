@@ -4,20 +4,21 @@ import os from "node:os";
 import path from "node:path";
 import { commandFailureMessage } from "./errors.js";
 import { stripHeadsPrefix } from "./git.js";
-import type { CodexChat, WorktreeChoice } from "./types.js";
+import type { Chat, WorktreeChoice } from "./types.js";
 
-type CodexMetadata = {
-  chat: CodexChat | null;
-  chats: CodexChat[];
+export type CodexMetadata = {
+  chat: Chat | null;
+  chats: Chat[];
   syncedBranch: string | null;
   threadId: string | null;
 };
 
-type CodexCatalogRow = CodexChat & {
+type CodexCatalogRow = Chat & {
   cwd: string;
+  threadId: string;
 };
 
-export function codexChatForPath(worktreePath: string): CodexChat | null {
+export function codexChatForPath(worktreePath: string): Chat | null {
   return codexMetadataForPaths([worktreePath]).get(worktreePath)?.chat ?? null;
 }
 
@@ -31,7 +32,9 @@ export function syncedBranchForPath(worktreePath: string): string | null {
 }
 
 export function codexThreadIdForChoice(choice: WorktreeChoice): string | null {
-  return choice.chat?.threadId || threadIdForPath(choice.path);
+  return choice.chats.find((chat) => chat.provider === "codex")?.id
+    ?? (choice.chat?.provider === "codex" ? choice.chat.id : null)
+    ?? threadIdForPath(choice.path);
 }
 
 export function codexMetadataForPaths(worktreePaths: string[]): Map<string, CodexMetadata> {
@@ -75,13 +78,15 @@ export function codexMetadataForPaths(worktreePaths: string[]): Map<string, Code
 }
 
 function appendCodexChat(metadata: CodexMetadata | undefined, row: CodexCatalogRow): void {
-  if (!metadata || !row.threadId || metadata.chats.some((chat) => chat.threadId === row.threadId)) {
+  if (!metadata || !row.threadId || metadata.chats.some((chat) => chat.provider === "codex" && chat.id === row.threadId)) {
     return;
   }
 
   const chat = {
+    provider: "codex" as const,
+    id: row.threadId,
     title: row.title,
-    threadId: row.threadId,
+    updatedAtMs: row.updatedAtMs,
   };
   metadata.chats.push(chat);
   metadata.chat ??= chat;
@@ -97,7 +102,8 @@ export function archiveRemovedCodexChat(choice: WorktreeChoice, threadId: string
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    console.log(`Archived Codex chat: ${choice.chat?.title || threadId}`);
+    const title = choice.chats.find((chat) => chat.provider === "codex" && chat.id === threadId)?.title;
+    console.log(`Archived Codex chat: ${title || threadId}`);
   } catch (error) {
     process.stderr.write(`Warning: failed to archive Codex chat ${threadId}: ${commandFailureMessage(error)}\n`);
   }
@@ -118,7 +124,7 @@ function queryCodexCatalogRows(worktreePaths: string[], threadIds: string[]): Co
     filters.push(`thread_id in (${threadIds.map(sqlQuote).join(", ")})`);
   }
 
-  const sql = `select display_title, thread_id, cwd
+  const sql = `select display_title, thread_id, cwd, source_updated_at
 from local_thread_catalog
 where missing_candidate = 0
   and (${filters.join(" or ")})
@@ -135,13 +141,16 @@ order by source_updated_at desc;`;
     }
 
     return output.split("\n").flatMap((line) => {
-      const [title, threadId, cwd] = line.split("\t");
+      const [title, threadId, cwd, updatedAt] = line.split("\t");
       return title || threadId || cwd
         ? [
             {
+              provider: "codex",
+              id: threadId ?? "",
               title: title ?? "",
               threadId: threadId ?? "",
               cwd: cwd ?? "",
+              updatedAtMs: timestampMs(updatedAt),
             },
           ]
         : [];
@@ -149,6 +158,15 @@ order by source_updated_at desc;`;
   } catch {
     return [];
   }
+}
+
+function timestampMs(value: string | undefined): number | undefined {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return undefined;
+  }
+
+  return timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
 }
 
 export function codexCatalogPath(): string {

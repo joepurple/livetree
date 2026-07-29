@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import path from "node:path";
+import { claudeProjectDirectoriesForWorktrees, claudeProjectsPath } from "../claude.js";
 import { codexCatalogPath } from "../codex.js";
 import { CliError } from "../errors.js";
 import { isDanglingSymlink, normalizePath, resolveExistingPath, samePath } from "../path-utils.js";
@@ -42,7 +43,7 @@ export function resolveSelector(context: ProjectContext, selector: string): Work
       basename === selector ||
       branch === selector ||
       head.startsWith(selector) ||
-      chats.some((chat) => chat.threadId.startsWith(selector) || chat.title.toLowerCase().includes(lowerSelector))
+      chats.some((chat) => chat.id.startsWith(selector) || chat.title.toLowerCase().includes(lowerSelector))
     );
   });
 
@@ -192,12 +193,16 @@ function worktreeSwitcherWatchTargets(context: ProjectContext): WatchTarget[] {
   const directoryEntryRenamed = (eventType: string): boolean => eventType === "rename";
   const catalogEntry = (eventType: string, filename: string | Buffer | null): boolean => eventType === "rename" && filenameText(filename) === catalogName;
 
+  const worktreePaths = context.choices.map((choice) => choice.path);
+  const claudeProjects = claudeProjectsPath();
   return [
     { path: context.commonDir, shouldRefresh: worktreesEntry },
     { path: path.join(context.commonDir, "worktrees"), shouldRefresh: directoryEntryRenamed },
     { path: context.liveDir, shouldRefresh: anyEvent },
     { path: path.dirname(catalogPath), shouldRefresh: catalogEntry },
     { path: catalogPath, shouldRefresh: anyEvent },
+    { path: claudeProjects, shouldRefresh: directoryEntryRenamed },
+    ...claudeProjectDirectoriesForWorktrees(worktreePaths).map((targetPath) => ({ path: targetPath, shouldRefresh: anyEvent })),
   ];
 }
 

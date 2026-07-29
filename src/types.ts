@@ -6,16 +6,18 @@ export type WorktreeRecord = {
   prunable: string | null;
 };
 
-export type CodexChat = {
+export type Chat = {
+  provider: "claude" | "codex";
+  id: string;
   title: string;
-  threadId: string;
+  updatedAtMs?: number;
 };
 
 export type WorktreeChoice = WorktreeRecord & {
   label: string;
   ref: string | null;
-  chat: CodexChat | null;
-  chats: CodexChat[];
+  chat: Chat | null;
+  chats: Chat[];
   isMain: boolean;
   lastCommitAtMs?: number | null;
 };

@@ -25,7 +25,7 @@ lt rm
 lt install tools
 ```
 
-With no arguments, `lt` opens the fullscreen searchable switcher. Type to fuzzy-filter by label, path, branch, commit hash, Codex thread id, or Codex chat title; use Up/Down to move, Enter to switch to the highlighted worktree, Esc to clear the search box, and Ctrl-C to exit. The fullscreen switcher updates live when worktrees, Codex metadata, or the active live tree change. To switch directly, use `lt use <selector>` or `lt @<selector>`. Selectors match `root` for the main project worktree, a worktree path, basename, branch name, commit hash prefix, Codex thread id prefix, or Codex chat title fragment.
+With no arguments, `lt` opens the fullscreen searchable switcher. Type to fuzzy-filter by label, path, branch, commit hash, chat id, or Codex/Claude chat title; use Up/Down to move, Enter to switch to the highlighted worktree, Esc to clear the search box, and Ctrl-C to exit. The fullscreen switcher updates live when worktrees, Codex or Claude chat metadata, or the active live tree change. To switch directly, use `lt use <selector>` or `lt @<selector>`. Selectors match `root` for the main project worktree, a worktree path, basename, branch name, commit hash prefix, chat id prefix, or Codex/Claude chat title fragment.
 
 Put another `lt` command after `@<selector>` to run that command inside the selected worktree without changing `.livetree/src`:
 

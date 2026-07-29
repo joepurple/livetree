@@ -792,15 +792,17 @@ function formatSelectedWorktreeDetails(item: WorktreeListItem, ageWidth: number)
   const choice = item.choice;
   const age = formatRelativeAge(item.modifiedAtMs).padStart(ageWidth);
   return [
-    ...secondaryChats(choice).map((chat) => `${formatSelectedWorktreePrefix("|")}${age}    ${chat.title || chat.threadId}`),
+    ...secondaryChats(choice).map((chat) => `${formatSelectedWorktreePrefix("|")}${age}    ${chat.title || chat.id}`),
     `${formatSelectedWorktreePrefix("|")}${" ".repeat(ageWidth)}    ${dim(choice.path, process.stderr)}`,
   ];
 }
 
 function secondaryChats(choice: WorktreeChoice): WorktreeChoice["chats"] {
   const chats = choice.chats.length > 0 ? choice.chats : choice.chat ? [choice.chat] : [];
-  const primaryThreadId = choice.chat?.threadId ?? chats[0]?.threadId;
-  return primaryThreadId ? chats.filter((chat) => chat.threadId !== primaryThreadId) : chats.slice(1);
+  const primaryChat = choice.chat ?? chats[0];
+  return primaryChat
+    ? chats.filter((chat) => chat.provider !== primaryChat.provider || chat.id !== primaryChat.id)
+    : chats.slice(1);
 }
 
 function formatSelectedWorktreePrefix(symbol: ">" | "|"): string {

@@ -78,7 +78,7 @@ function selectorCandidates(choices: WorktreeChoice[]): string[] {
     add(choice.head && !/^0+$/.test(choice.head) ? choice.head.slice(0, 12) : null);
     const chats = choice.chats.length > 0 ? choice.chats : choice.chat ? [choice.chat] : [];
     for (const chat of chats) {
-      add(chat.threadId);
+      add(chat.id);
       add(chat.title);
     }
     add(choice.path);

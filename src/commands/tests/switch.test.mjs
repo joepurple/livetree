@@ -18,7 +18,7 @@ test("resolves selectors by path, branch, hash, basename, title, and thread", (t
     label: "Feature Work",
     branch: "feature",
     head: "abcdef123456",
-    chat: { title: "Build Search", threadId: "thread-feature" },
+    chat: { provider: "claude", id: "thread-feature", title: "Build Search" },
   });
   const otherChoice = makeChoice({ path: other, label: "Other Work", branch: "other" });
   const context = makeContext(root, [rootChoice, featureChoice, otherChoice]);

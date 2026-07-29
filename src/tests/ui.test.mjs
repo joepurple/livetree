@@ -67,10 +67,10 @@ test("runInteractiveWorktreeSwitcher renders selected chat details", async () =>
     choice: makeChoice({
       path: "/tmp/api-work",
       label: "Primary Chat (+1)",
-      chat: { title: "Primary Chat", threadId: "thread-primary" },
+      chat: { provider: "codex", id: "thread-primary", title: "Primary Chat" },
       chats: [
-        { title: "Primary Chat", threadId: "thread-primary" },
-        { title: "Review Followup", threadId: "thread-review" },
+        { provider: "codex", id: "thread-primary", title: "Primary Chat" },
+        { provider: "claude", id: "thread-review", title: "Review Followup" },
       ],
     }),
     modifiedAtMs: Date.now(),

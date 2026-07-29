@@ -8,7 +8,8 @@ import { createGitRepo, makeChoice, tempDir, withEnv } from "./helpers.mjs";
 
 test("builds project context from a git repo and linked worktree", async (t) => {
   const codeHome = tempDir("codex-home", t);
-  await withEnv({ CODEX_HOME: codeHome }, async () => {
+  const claudeHome = tempDir("claude-home", t);
+  await withEnv({ CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codeHome }, async () => {
     const repo = createGitRepo(t, "worktree-context");
     const linked = path.join(tempDir("linked-parent", t), "feature");
     execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: repo, stdio: "ignore" });
@@ -27,6 +28,18 @@ test("builds project context from a git repo and linked worktree", async (t) => 
       insert into local_thread_catalog values ('Older Chat', 'thread-older', ${sqlQuote(linked)}, 0, 1);
       insert into local_thread_catalog values ('Newer Chat', 'thread-newer', ${sqlQuote(linked)}, 0, 2);`,
     ]);
+    const claudeProject = path.join(claudeHome, "projects", encodeClaudeProjectPath(linked));
+    mkdirSync(claudeProject, { recursive: true });
+    writeFileSync(path.join(claudeProject, "claude-thread.jsonl"), [
+      JSON.stringify({
+        type: "user",
+        sessionId: "claude-thread",
+        cwd: linked,
+        slug: "claude-feature-chat",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      }),
+      "",
+    ].join("\n"));
 
     const context = buildProjectContext(linked);
     assert.equal(context.mainRoot, repo);
@@ -35,13 +48,17 @@ test("builds project context from a git repo and linked worktree", async (t) => 
     assert.equal(context.choices[0].isMain, true);
     const linkedChoice = context.choices.find((choice) => choice.path === linked);
     assert.equal(linkedChoice?.ref, "feature");
-    assert.equal(linkedChoice?.label, "Newer Chat (+1) [feature]");
-    assert.deepEqual(linkedChoice?.chats.map((chat) => chat.title), ["Newer Chat", "Older Chat"]);
+    assert.equal(linkedChoice?.label, "claude-feature-chat (+2) [feature]");
+    assert.deepEqual(linkedChoice?.chats.map((chat) => chat.title), ["claude-feature-chat", "Newer Chat", "Older Chat"]);
   });
 });
 
 function sqlQuote(value) {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+function encodeClaudeProjectPath(value) {
+  return value.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 test("tracks worktree initialization markers", (t) => {
@@ -66,10 +83,10 @@ test("sorts worktrees and creates search text", (t) => {
     makeChoice({
       path: newer,
       label: "Newer (+1)",
-      chat: { title: "Chat Title", threadId: "thread-123" },
+      chat: { provider: "codex", id: "thread-123", title: "Chat Title" },
       chats: [
-        { title: "Chat Title", threadId: "thread-123" },
-        { title: "Second Chat", threadId: "thread-456" },
+        { provider: "codex", id: "thread-123", title: "Chat Title" },
+        { provider: "claude", id: "thread-456", title: "Second Chat" },
       ],
     }),
   ];

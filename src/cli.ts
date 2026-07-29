@@ -29,8 +29,8 @@ const usage = `Usage:
   lt install tools
 
 Use 'lt use <selector>' to select a worktree by branch name,
-worktree directory name, commit prefix, path, Codex thread id prefix, or
-Codex chat title fragment.`;
+worktree directory name, commit prefix, path, chat id prefix, or
+Codex/Claude chat title fragment.`;
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);

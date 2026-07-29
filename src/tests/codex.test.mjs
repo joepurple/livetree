@@ -19,7 +19,18 @@ test("reads Codex metadata from a worktree git dir", async (t) => {
     assert.equal(threadIdForPath(repo), "thread-abc");
     assert.equal(syncedBranchForPath(repo), "feature");
     assert.equal(codexThreadIdForChoice(makeChoice({ path: repo })), "thread-abc");
-    assert.equal(codexThreadIdForChoice(makeChoice({ path: repo, chat: { title: "Chat", threadId: "chat-thread" } })), "chat-thread");
+    assert.equal(codexThreadIdForChoice(makeChoice({
+      path: repo,
+      chat: { provider: "codex", id: "chat-thread", title: "Chat" },
+    })), "chat-thread");
+    assert.equal(codexThreadIdForChoice(makeChoice({
+      path: repo,
+      chat: { provider: "claude", id: "claude-thread", title: "Claude Chat" },
+      chats: [
+        { provider: "claude", id: "claude-thread", title: "Claude Chat" },
+        { provider: "codex", id: "codex-thread", title: "Codex Chat" },
+      ],
+    })), "codex-thread");
     assert.equal(codexChatForPath(repo), null);
     archiveRemovedCodexChat(makeChoice({ path: repo }), null);
   });
