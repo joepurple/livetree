@@ -10,6 +10,7 @@ import { interpolateTemplate } from "../interpolate.js";
 import { portlessName } from "../naming.js";
 import { ensureProxyRunning, probeAppReachable, proxyInfo, urlForName } from "../portless.js";
 import { stopProcessGroupAndWait } from "../processes.js";
+import { registeredProjectPaths } from "../projects.js";
 import { qrSvg, qrTerminal } from "../qr.js";
 import {
   clearTunnelEnvPending,
@@ -30,14 +31,21 @@ const DEFAULT_PORT = 43117;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_INITIAL_LOG_BYTES = 256 * 1024;
 
-type ActionBody = { worktree?: unknown; script?: unknown };
+type ActionBody = { project?: unknown; worktree?: unknown; script?: unknown };
+
+type DashboardProject = {
+  id: string;
+  context: ProjectContext;
+  config: LtConfig;
+};
 
 export async function runServeCommand(context: ProjectContext, args: string[]): Promise<void> {
   const options = parseServeArgs(args);
   const config = readLtConfig(context);
+  await reconcileManagedProcesses(context, config);
   const basePath = "/";
   const server = createServer((request, response) => {
-    void handleRequest(context, config, basePath, request, response);
+    void handleRequest(context, basePath, request, response);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -76,6 +84,34 @@ export async function runServeCommand(context: ProjectContext, args: string[]): 
   await waitForShutdown(server, tailscaleChild);
 }
 
+export async function reconcileManagedProcesses(
+  context: ProjectContext,
+  config: LtConfig,
+  options: { stop?: (pid: number) => Promise<void>; log?: (message: string) => void } = {},
+): Promise<void> {
+  const stop = options.stop ?? stopProcessGroupAndWait;
+  const log = options.log ?? ((message: string) => console.error(message));
+  const validNames = new Set(
+    context.choices.flatMap((worktree) => Object.keys(config.devScripts).map((script) => portlessName(config.name, worktree, script))),
+  );
+
+  for (const tunnel of readTunnelEntries(context.stateDir)) {
+    if (validNames.has(tunnel.name)) continue;
+    log(`Stopping orphaned tunnel '${tunnel.name}'...`);
+    await stop(tunnel.pid);
+    removeTunnelEntry(context.stateDir, tunnel.name);
+    clearTunnelEnvPending(context.stateDir, tunnel.name);
+  }
+
+  for (const server of readServerEntries(context.stateDir)) {
+    if (validNames.has(server.name) || !server.managed) continue;
+    log(`Stopping orphaned dev server '${server.name}'...`);
+    await stop(server.pid);
+    removeServerEntry(context.stateDir, server.name);
+    clearTunnelEnvPending(context.stateDir, server.name);
+  }
+}
+
 function parseServeArgs(args: string[]): { tailscale: boolean; port: number } {
   let tailscale = false;
   let port = DEFAULT_PORT;
@@ -99,7 +135,6 @@ function parseServeArgs(args: string[]): { tailscale: boolean; port: number } {
 
 async function handleRequest(
   originalContext: ProjectContext,
-  config: LtConfig,
   basePath: string,
   request: IncomingMessage,
   response: ServerResponse,
@@ -122,11 +157,11 @@ async function handleRequest(
     } else if (request.method === "GET" && route.startsWith("/assets/")) {
       sendDashboardAsset(response, route.slice(1));
     } else if (request.method === "GET" && route === "/api/state") {
-      sendJson(response, 200, await dashboardState(originalContext, config));
+      sendJson(response, 200, await dashboardState(originalContext));
     } else if (request.method === "GET" && route === "/api/logs") {
-      streamServerLogs(originalContext, config, requestUrl, request, response);
+      streamServerLogs(originalContext, requestUrl, request, response);
     } else if (request.method === "POST" && route.startsWith("/api/")) {
-      await handleAction(originalContext, config, route, await readJsonBody(request));
+      await handleAction(originalContext, route, await readJsonBody(request));
       sendJson(response, 200, { ok: true });
     } else {
       sendJson(response, 404, { error: "Not found" });
@@ -138,12 +173,11 @@ async function handleRequest(
 
 function streamServerLogs(
   originalContext: ProjectContext,
-  config: LtConfig,
   requestUrl: URL,
   request: IncomingMessage,
   response: ServerResponse,
 ): void {
-  const context = buildProjectContext(originalContext.currentRoot);
+  const { context, config } = requireDashboardProject(originalContext, requestUrl.searchParams.get("project"));
   const worktree = requireWorktree(context, requestUrl.searchParams.get("worktree"));
   const script = requireScript(config, requestUrl.searchParams.get("script"));
   const name = portlessName(config.name, worktree, script);
@@ -192,8 +226,13 @@ function streamServerLogs(
   request.once("close", () => clearInterval(timer));
 }
 
-async function dashboardState(originalContext: ProjectContext, config: LtConfig): Promise<object> {
-  const context = buildProjectContext(originalContext.currentRoot);
+async function dashboardState(originalContext: ProjectContext): Promise<object> {
+  const projects = await Promise.all(dashboardProjects(originalContext).map(dashboardProjectState));
+  return { generatedAtMs: Date.now(), projects };
+}
+
+async function dashboardProjectState(project: DashboardProject): Promise<object> {
+  const { id, context, config } = project;
   const proxy = proxyInfo();
   const servers = readServerEntries(context.stateDir);
   const tunnels = new Map(readTunnelEntries(context.stateDir).map((entry) => [entry.name, entry]));
@@ -231,13 +270,45 @@ async function dashboardState(originalContext: ProjectContext, config: LtConfig)
       branch: choice.branch,
       ref: choice.ref,
       label: choice.label,
+      chat: choice.isMain || !choice.chat ? null : {
+        provider: choice.chat.provider,
+        title: choice.chat.title,
+      },
       isMain: choice.isMain,
       modifiedAtMs,
       scripts,
       links,
     };
   });
-  return { project: config.name, generatedAtMs: Date.now(), worktrees };
+  return { id, name: config.name, path: context.mainRoot, worktrees };
+}
+
+function dashboardProjects(originalContext: ProjectContext): DashboardProject[] {
+  const projects: DashboardProject[] = [];
+  const seen = new Set<string>();
+
+  for (const projectPath of [originalContext.mainRoot, ...registeredProjectPaths()]) {
+    try {
+      const context = buildProjectContext(projectPath);
+      if (seen.has(context.mainRoot)) continue;
+      const config = readLtConfig(context);
+      seen.add(context.mainRoot);
+      projects.push({ id: context.mainRoot, context, config });
+    } catch (error) {
+      if (projectPath === originalContext.mainRoot) throw error;
+    }
+  }
+
+  return projects;
+}
+
+function requireDashboardProject(originalContext: ProjectContext, value: unknown): DashboardProject {
+  const projects = dashboardProjects(originalContext);
+  if (value === null || value === undefined || value === "") return projects[0]!;
+  if (typeof value !== "string") throw new CliError("Dashboard request requires a project id.");
+  const project = projects.find((candidate) => candidate.id === value);
+  if (!project) throw new CliError(`Unknown project: ${value}`);
+  return project;
 }
 
 function linkResolver(context: ProjectContext, config: LtConfig, worktree: WorktreeChoice) {
@@ -256,7 +327,8 @@ function linkResolver(context: ProjectContext, config: LtConfig, worktree: Workt
   };
 }
 
-async function handleAction(context: ProjectContext, config: LtConfig, route: string, body: ActionBody): Promise<void> {
+async function handleAction(originalContext: ProjectContext, route: string, body: ActionBody): Promise<void> {
+  const { context, config } = requireDashboardProject(originalContext, body.project);
   const refreshed = buildProjectContext(context.currentRoot);
   const worktree = requireWorktree(refreshed, body.worktree);
   const script = requireScript(config, body.script);

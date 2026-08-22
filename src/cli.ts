@@ -6,6 +6,7 @@ import { listWorktrees } from "./commands/list.js";
 import { runServeCommand } from "./commands/serve.js";
 import { runTunnelCommand } from "./commands/tunnel.js";
 import { CliError } from "./errors.js";
+import { isConfiguredProject, registerProject } from "./projects.js";
 import { buildFastProjectContext, buildProjectContext } from "./worktrees.js";
 
 const usage = `Usage:
@@ -34,6 +35,10 @@ async function main(): Promise<void> {
   const context = ["init", "ls", "serve"].includes(command)
     ? buildProjectContext(process.cwd())
     : buildFastProjectContext(process.cwd());
+
+  if (isConfiguredProject(context.mainRoot)) {
+    registerProject(context.mainRoot);
+  }
 
   if (command === "init") {
     if (args.length > 1) throw new CliError("Usage: livetree init");

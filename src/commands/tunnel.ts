@@ -5,11 +5,11 @@ import { readLtConfig } from "../config.js";
 import { CliError } from "../errors.js";
 import { templateTokens } from "../interpolate.js";
 import { portlessName } from "../naming.js";
-import { probeAppReachable, proxyInfo, registeredAppPort } from "../portless.js";
+import { probeAppReachable, probeLocalPort, proxyInfo, registeredAppPort, waitForLocalPort } from "../portless.js";
 import type { ProxyInfo } from "../portless.js";
 import { killProcessGroup, stopProcessGroupAndWait } from "../processes.js";
 import { clearTunnelEnvPending, markTunnelEnvPending, readServerEntry, readTunnelEntries, readTunnelEntry, removeServerEntry, removeTunnelEntry, tunnelLogPath, writeTunnelEntry } from "../registry.js";
-import { nextTailscaleServePort, readTailscaleInfo, startTailscaleServe, tailscaleUrl, usedTailscaleServePorts, waitForTailscaleServe } from "../tailscale.js";
+import { detachTailscaleServe, nextTailscaleServePort, readTailscaleInfo, startTailscaleServe, tailscaleUrl, usedTailscaleServePorts, waitForTailscaleServe } from "../tailscale.js";
 import type { TailscaleInfo } from "../tailscale.js";
 import type { LtConfig, ProjectContext, TunnelEntry, WorktreeRecord } from "../types.js";
 import { currentWorktree } from "../worktrees.js";
@@ -95,7 +95,7 @@ export async function ensureTunnelForScript(
   }
 
   const name = portlessName(config.name, worktree, scriptName);
-  const existing = readTunnelEntry(context.stateDir, name);
+  let existing = readTunnelEntry(context.stateDir, name);
   const visited = new Set(options.visited ?? []);
   if (visited.has(name)) {
     throw new CliError(`Tunnel dependencies form a cycle involving '${scriptName}'. Check the \${tunnelUrl:...} references in ${config.configPath}.`);
@@ -117,7 +117,8 @@ export async function ensureTunnelForScript(
     await ensureTunnelForScript(context, config, worktree, dependency, { ...options, visited });
   }
 
-  await restartDevServerIfEnvChanged(context, config, worktree, scriptName, options);
+  const restarted = await restartDevServerIfEnvChanged(context, config, worktree, scriptName, existing, options);
+  if (restarted) existing = null;
   if (existing) {
     return existing;
   }
@@ -132,8 +133,9 @@ async function restartDevServerIfEnvChanged(
   config: LtConfig,
   worktree: WorktreeRecord,
   scriptName: string,
+  existingTunnel: TunnelEntry | null,
   options: EnsureTunnelOptions,
-): Promise<void> {
+): Promise<boolean> {
   const script = config.devScripts[scriptName]!;
   const name = portlessName(config.name, worktree, scriptName);
   const server = readServerEntry(context.stateDir, name);
@@ -144,7 +146,7 @@ async function restartDevServerIfEnvChanged(
   const resolver = devTokenResolver(context, config, worktree, options.proxy);
   const desiredEnv = resolveDevEnv({ ...script.env, ...script.tunnelEnv }, resolver);
   if (fingerprintDevEnv(desiredEnv) === (server.envFingerprint ?? fingerprintDevEnv(server.env ?? {}))) {
-    return;
+    return false;
   }
 
   if (!server.managed) {
@@ -156,10 +158,15 @@ async function restartDevServerIfEnvChanged(
   }
 
   options.log(`Restarting '${scriptName}' with its tunnel environment...`);
+  if (existingTunnel) {
+    await stopProcessGroupAndWait(existingTunnel.pid);
+    removeTunnelEntry(context.stateDir, name);
+  }
   await stopProcessGroupAndWait(server.pid);
   removeServerEntry(context.stateDir, name);
   await startDevProcess(context, config, worktree, scriptName, { proxy: options.proxy, managed: true, tunneled: true });
   clearTunnelEnvPending(context.stateDir, name);
+  return true;
 }
 
 async function openTunnel(
@@ -170,9 +177,29 @@ async function openTunnel(
   tunnelPort: "auto" | "app",
   options: EnsureTunnelOptions,
 ): Promise<TunnelEntry> {
+  const server = readServerEntry(context.stateDir, name);
+  const localPort = server?.appPort ?? registeredAppPort(name);
+  if (!localPort) {
+    throw new CliError(`Could not determine the application port for '${scriptName}'. Restart its dev server and try again.`);
+  }
+
+  // A managed server may have just been restarted with its tunnel environment.
+  // Wait for the new process to bind its allocated port before Tailscale Serve can
+  // claim the same numeric port (tunnelPort: app). The portless hostname can still
+  // briefly route to the old process, so it is not a sufficient readiness signal.
+  if (!(await probeLocalPort(localPort))) {
+    options.log(`Waiting for '${scriptName}' to listen on port ${localPort}...`);
+    if (!(await waitForLocalPort(localPort))) {
+      throw new CliError(
+        `The dev server for '${scriptName}' did not start listening on port ${localPort}.\n`
+        + "Check its log before opening a tunnel.",
+      );
+    }
+  }
+
   if (!(await probeAppReachable(name, options.proxy, 3_000))) {
     throw new CliError(
-      `The dev server for '${scriptName}' is registered but is not reachable at ${name}.localhost.\n`
+      `The dev server for '${scriptName}' is listening on port ${localPort}, but is not reachable at ${name}.localhost.\n`
       + "Restart it and check its log before opening a tunnel.",
     );
   }
@@ -180,11 +207,6 @@ async function openTunnel(
   options.log(`Opening tunnel for '${scriptName}'...`);
   const logPath = tunnelLogPath(context.stateDir, name);
   mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
-  const server = readServerEntry(context.stateDir, name);
-  const localPort = server?.appPort ?? registeredAppPort(name);
-  if (!localPort) {
-    throw new CliError(`Could not determine the application port for '${scriptName}'. Restart its dev server and try again.`);
-  }
 
   const usedPorts = usedTailscaleServePorts(options.tailscale.binPath);
   for (const tunnel of readTunnelEntries(context.stateDir)) {
@@ -266,7 +288,7 @@ async function openTailscaleServe(
     startedAtMs: Date.now(),
   };
   writeTunnelEntry(context.stateDir, entry);
-  if (options.detached) handle.child.unref();
+  if (options.detached) detachTailscaleServe(handle);
   options.created.push({ child: handle.child, entry });
   return entry;
 }

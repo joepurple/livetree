@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { reconcileManagedProcesses } from "../../dist/commands/serve.js";
+import { readServerEntries, readTunnelEntries, writeServerEntry, writeTunnelEntry } from "../../dist/registry.js";
 import { cliPath, createGitRepo } from "./helpers.mjs";
 
 test("serves dashboard HTML and JSON on loopback", async (t) => {
@@ -37,6 +39,7 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   assert.equal(json.project, "demo");
   assert.equal(json.worktrees[0].scripts[0].script, "web");
   assert.equal(json.worktrees[0].links[0].url, "https://demo-main-web.localhost:1355");
+  assert.equal(json.worktrees[0].chat, null);
   assert.equal("chats" in json.worktrees[0], false);
   assert.equal(json.worktrees[0].scripts[0].logPath, logPath);
 
@@ -48,6 +51,47 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   assert.match(new TextDecoder().decode(chunk.value), /ready on port 4173/);
   child.kill("SIGTERM");
   await new Promise((resolve) => child.once("exit", resolve));
+
+  const restarted = spawn(process.execPath, [cliPath, "serve", "--port", "0"], { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { if (restarted.exitCode === null) restarted.kill("SIGTERM"); });
+  const restartedOutput = await waitForOutput(restarted.stdout, /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/);
+  const restartedUrl = /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(restartedOutput)[1];
+  const recoveredState = await fetch(`${restartedUrl}api/state`);
+  assert.equal(recoveredState.status, 200);
+  const recoveredJson = await recoveredState.json();
+  assert.equal(recoveredJson.worktrees[0].scripts[0].running, true);
+  assert.equal(recoveredJson.worktrees[0].scripts[0].pid, process.pid);
+});
+
+test("reconciles managed processes without losing valid dashboard state", async (t) => {
+  const repo = createGitRepo(t, "serve-reconcile");
+  const stateDir = path.join(repo, ".livetree", "state");
+  const context = {
+    stateDir,
+    choices: [{ path: repo, branch: "main", head: null, bare: false, prunable: null, label: "main", ref: "main", chat: null, chats: [], isMain: true }],
+  };
+  const config = {
+    name: "demo",
+    devScripts: { web: { name: "web", cmd: "node web.mjs", env: {}, tunnelEnv: {}, portArg: null, tunnelPort: "auto" } },
+  };
+  const entry = (name, script, managed) => ({
+    name, script, worktree: repo, pid: process.pid, url: `https://${name}.localhost`, envFingerprint: "test",
+    tunneled: false, startedAtMs: Date.now(), managed, logPath: null,
+  });
+  writeServerEntry(stateDir, entry("demo-main-web", "web", true));
+  writeServerEntry(stateDir, entry("demo-main-old", "old", true));
+  writeServerEntry(stateDir, entry("demo-main-manual", "manual", false));
+  writeTunnelEntry(stateDir, {
+    name: "demo-main-old", script: "old", worktree: repo, pid: process.pid,
+    url: "https://devbox.ts.net:8443", httpsPort: 8443, startedAtMs: Date.now(),
+  });
+  const stopped = [];
+
+  await reconcileManagedProcesses(context, config, { stop: async (pid) => { stopped.push(pid); }, log: () => {} });
+
+  assert.deepEqual(stopped, [process.pid, process.pid]);
+  assert.deepEqual(readServerEntries(stateDir).map(({ name }) => name), ["demo-main-manual", "demo-main-web"]);
+  assert.deepEqual(readTunnelEntries(stateDir), []);
 });
 
 function waitForOutput(stream, pattern) {

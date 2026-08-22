@@ -24,6 +24,10 @@ export type Worktree = {
   branch: string | null;
   ref: string | null;
   label: string;
+  chat: {
+    provider: "claude" | "codex" | "cursor";
+    title: string;
+  } | null;
   isMain: boolean;
   modifiedAtMs: number;
   scripts: Script[];

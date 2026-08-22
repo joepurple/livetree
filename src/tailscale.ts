@@ -145,6 +145,16 @@ export function startTailscaleServe(
   return { child, output: () => output };
 }
 
+export function detachTailscaleServe(handle: TailscaleServeHandle): void {
+  handle.child.unref();
+  // ChildProcess.unref() does not unref piped stdout/stderr. Without this, a
+  // dashboard that created a detached Serve process can close its HTTP server
+  // yet remain alive indefinitely because these pipe handles are still active.
+  for (const stream of [handle.child.stdout, handle.child.stderr]) {
+    (stream as (NodeJS.ReadableStream & { unref?: () => void }) | null)?.unref?.();
+  }
+}
+
 export async function waitForTailscaleServe(
   handle: TailscaleServeHandle,
   url: string,

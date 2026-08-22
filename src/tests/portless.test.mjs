@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
-import { DEFAULT_PROXY_PORT, pickFreePort, portlessAppArgs, portlessChildEnv, probeAppReachable, resolvePortlessCli, splitCommand, urlForName } from "../../dist/portless.js";
+import { DEFAULT_PROXY_PORT, pickFreePort, portlessAppArgs, portlessChildEnv, probeAppReachable, probeLocalPort, resolvePortlessCli, splitCommand, urlForName, waitForLocalPort } from "../../dist/portless.js";
 
 test("resolves the bundled CLI and builds portless invocations", () => {
   assert.equal(DEFAULT_PROXY_PORT, 1355);
@@ -22,6 +22,18 @@ test("splits quoted commands without invoking a shell", () => {
 
 test("allocates app ports outside the protected range", async () => {
   assert.ok(await pickFreePort() > 1023);
+});
+
+test("waits for the allocated app port itself to become reachable", async (t) => {
+  const port = await pickFreePort();
+  assert.equal(await probeLocalPort(port, 25), false);
+
+  const server = createServer((_request, response) => response.end("ok"));
+  t.after(() => server.close());
+  const timer = setTimeout(() => server.listen(port, "127.0.0.1"), 50);
+  t.after(() => clearTimeout(timer));
+
+  assert.equal(await waitForLocalPort(port, 1_000), true);
 });
 
 test("distinguishes an application error from an unreachable proxy target", async (t) => {

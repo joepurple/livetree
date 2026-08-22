@@ -3,6 +3,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import {
+  detachTailscaleServe,
   nextTailscaleServePort,
   readTailscaleInfo,
   resolveTailscaleCli,
@@ -46,4 +47,17 @@ https://login.tailscale.com/f/serve?node=node123
 `);
   assert.match(error.message, /not enabled.*https:\/\/login\.tailscale\.com\/f\/serve\?node=node123/);
   assert.equal(tailscaleDnsName({ Self: { HostName: "devbox" }, CurrentTailnet: { MagicDNSSuffix: "tail.ts.net." } }), "devbox.tail.ts.net");
+});
+
+test("detaches the Tailscale child and its output pipes", () => {
+  const calls = [];
+  detachTailscaleServe({
+    child: {
+      unref: () => calls.push("child"),
+      stdout: { unref: () => calls.push("stdout") },
+      stderr: { unref: () => calls.push("stderr") },
+    },
+    output: () => "",
+  });
+  assert.deepEqual(calls, ["child", "stdout", "stderr"]);
 });
