@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
 import path from "node:path";
 import { readLtConfig } from "../config.js";
 import { CliError } from "../errors.js";
@@ -82,13 +82,15 @@ export async function startDevProcess(
   }
 
   const cliPath = resolvePortlessCli();
-  const logPath = options.managed ? serverLogPath(context.stateDir, name) : null;
+  const logPath = serverLogPath(context.stateDir, name);
   let logFd: number | null = null;
-  let stdio: ("inherit" | "ignore" | number)[] = ["inherit", "inherit", "inherit"];
-  if (logPath) {
-    mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
+  let stdio: ("inherit" | "ignore" | "pipe" | number)[] = ["inherit", "inherit", "inherit"];
+  mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
+  if (options.managed) {
     logFd = openSync(logPath, "a", 0o600);
     stdio = ["ignore", logFd, logFd];
+  } else {
+    stdio = ["inherit", "pipe", "pipe"];
   }
 
   const child = spawn(process.execPath, [cliPath, ...portlessAppArgs(name, commandArgs, appPort)], {
@@ -105,6 +107,14 @@ export async function startDevProcess(
 
   if (options.managed) {
     child.unref();
+  } else {
+    const logStream = createWriteStream(logPath, { flags: "a", mode: 0o600 });
+    logStream.on("error", () => { /* The foreground process should keep running if log capture fails. */ });
+    child.stdout?.pipe(process.stdout, { end: false });
+    child.stdout?.pipe(logStream, { end: false });
+    child.stderr?.pipe(process.stderr, { end: false });
+    child.stderr?.pipe(logStream, { end: false });
+    child.once("close", () => logStream.end());
   }
 
   const entry: ServerEntry = {

@@ -1,6 +1,9 @@
 import type { ChildProcess } from "node:child_process";
+import { createReadStream, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { readLtConfig } from "../config.js";
 import { CliError, errorMessage } from "../errors.js";
 import { interpolateTemplate } from "../interpolate.js";
@@ -25,6 +28,7 @@ import { ensureTunnelForScript } from "./tunnel.js";
 
 const DEFAULT_PORT = 43117;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_INITIAL_LOG_BYTES = 256 * 1024;
 
 type ActionBody = { worktree?: unknown; script?: unknown };
 
@@ -114,9 +118,13 @@ async function handleRequest(
 
     const route = `/${requestUrl.pathname.slice(basePath.length)}`.replace(/\/+$/, "") || "/";
     if (request.method === "GET" && route === "/") {
-      sendHtml(response, dashboardHtml(basePath));
+      sendDashboardAsset(response, "index.html");
+    } else if (request.method === "GET" && route.startsWith("/assets/")) {
+      sendDashboardAsset(response, route.slice(1));
     } else if (request.method === "GET" && route === "/api/state") {
       sendJson(response, 200, await dashboardState(originalContext, config));
+    } else if (request.method === "GET" && route === "/api/logs") {
+      streamServerLogs(originalContext, config, requestUrl, request, response);
     } else if (request.method === "POST" && route.startsWith("/api/")) {
       await handleAction(originalContext, config, route, await readJsonBody(request));
       sendJson(response, 200, { ok: true });
@@ -126,6 +134,62 @@ async function handleRequest(
   } catch (error) {
     sendJson(response, error instanceof CliError ? 400 : 500, { error: errorMessage(error) });
   }
+}
+
+function streamServerLogs(
+  originalContext: ProjectContext,
+  config: LtConfig,
+  requestUrl: URL,
+  request: IncomingMessage,
+  response: ServerResponse,
+): void {
+  const context = buildProjectContext(originalContext.currentRoot);
+  const worktree = requireWorktree(context, requestUrl.searchParams.get("worktree"));
+  const script = requireScript(config, requestUrl.searchParams.get("script"));
+  const name = portlessName(config.name, worktree, script);
+  const server = readServerEntry(context.stateDir, name);
+  if (!server) throw new CliError(`Dev script '${script}' is not running in this worktree.`);
+  if (!server.logPath) throw new CliError(`Logs are unavailable for this '${script}' process. Restart it with this version of livetree to enable capture.`);
+
+  let offset: number;
+  try {
+    const size = statSync(server.logPath).size;
+    offset = Math.max(0, size - MAX_INITIAL_LOG_BYTES);
+  } catch {
+    offset = 0;
+  }
+
+  response.writeHead(200, {
+    "content-type": "text/plain; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  response.flushHeaders();
+
+  let reading = false;
+  const pump = (): void => {
+    if (reading || response.destroyed) return;
+    let size: number;
+    try {
+      size = statSync(server.logPath!).size;
+    } catch {
+      return;
+    }
+    if (size < offset) offset = 0;
+    if (size === offset) return;
+
+    const start = offset;
+    offset = size;
+    reading = true;
+    const stream = createReadStream(server.logPath!, { start, end: size - 1 });
+    stream.on("data", (chunk) => response.write(chunk));
+    stream.once("end", () => { reading = false; });
+    stream.once("error", () => { reading = false; });
+  };
+
+  pump();
+  const timer = setInterval(pump, 250);
+  request.once("close", () => clearInterval(timer));
 }
 
 async function dashboardState(originalContext: ProjectContext, config: LtConfig): Promise<object> {
@@ -272,25 +336,34 @@ function sendJson(response: ServerResponse, status: number, value: object): void
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-function sendHtml(response: ServerResponse, html: string): void {
-  response.writeHead(200, {
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-    "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
-  });
-  response.end(html);
-}
+function sendDashboardAsset(response: ServerResponse, relativePath: string): void {
+  const dashboardRoot = path.resolve(fileURLToPath(new URL("../dashboard/", import.meta.url)));
+  const filePath = path.resolve(dashboardRoot, relativePath);
+  if (!filePath.startsWith(`${dashboardRoot}${path.sep}`)) {
+    sendJson(response, 404, { error: "Not found" });
+    return;
+  }
 
-function dashboardHtml(basePath: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>livetree</title><style>
-:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,sans-serif;background:#111;color:#eee}body{max-width:1100px;margin:0 auto;padding:28px 18px}h1{margin:0 0 6px}.muted{color:#999}.tree{border:1px solid #333;border-radius:12px;padding:16px;margin:18px 0;background:#181818}.path{overflow-wrap:anywhere}.script{display:grid;grid-template-columns:minmax(100px,1fr) minmax(220px,3fr) auto;gap:10px;align-items:center;border-top:1px solid #292929;padding:10px 0}.ok{color:#6dce8b}.bad{color:#f3a36b}button{border:1px solid #555;border-radius:7px;background:#242424;color:#fff;padding:6px 10px;cursor:pointer}.actions{display:flex;gap:6px;flex-wrap:wrap}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}.link{padding:10px;background:#202020;border-radius:8px}.link img{display:block;width:110px;height:110px;margin-top:8px}a{color:#8cc8ff;overflow-wrap:anywhere}@media(max-width:700px){.script{grid-template-columns:1fr}}
-</style></head><body><h1>livetree</h1><div id="summary" class="muted">Loading…</div><main id="app"></main><script>
-const base=${JSON.stringify(basePath)};const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const age=t=>{const s=Math.max(0,Math.floor((Date.now()-t)/1000));return s<60?s+'s':s<3600?Math.floor(s/60)+'m':s<86400?Math.floor(s/3600)+'h':Math.floor(s/86400)+'d'};
-async function action(kind,w,s){const r=await fetch(base+'api/'+kind,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({worktree:w,script:s})});const x=await r.json();if(!r.ok)alert(x.error||'Action failed');await load()}
-function buttons(w,s){let x='<button data-k="dev/'+(s.running?'stop':'start')+'">'+(s.running?'Stop':'Start')+'</button>';if(s.running)x+='<button data-k="tunnel/'+(s.tunnelUrl?'stop':'start')+'">'+(s.tunnelUrl?'Stop Tailscale':'Share via Tailscale')+'</button>';return '<span class="actions" data-w="'+esc(w.path)+'" data-s="'+esc(s.script)+'">'+x+'</span>'}
-function render(d){document.querySelector('#summary').textContent=d.project+' · '+d.worktrees.length+' worktrees';document.querySelector('#app').innerHTML=d.worktrees.map(w=>'<section class="tree"><h2>'+esc(w.label)+' <small class="muted">'+age(w.modifiedAtMs)+'</small></h2>'+(w.isMain?'':'<div class="path muted">'+esc(w.path)+'</div>')+'<h3>Servers</h3>'+w.scripts.map(s=>'<div class="script"><strong>'+esc(s.script)+'</strong><div><a href="'+esc(s.url)+'" target="_blank">'+esc(s.url)+'</a><div class="'+(s.healthy?'ok':'bad')+'">'+(s.running?((s.healthy?'running':'running, not responding')+' · up '+age(s.startedAtMs)):'stopped')+(s.tunnelUrl?' · <a href="'+esc(s.tunnelUrl)+'" target="_blank">'+esc(s.tunnelUrl)+'</a>':'')+'</div></div>'+buttons(w,s)+'</div>').join('')+(w.links.length?'<h3>Links</h3><div class="links">'+w.links.map(l=>l.available?'<div class="link"><a href="'+esc(l.url)+'">'+esc(l.name)+'</a><img alt="QR" src="data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(l.qr)))+'"></div>':'<div class="link"><strong>'+esc(l.name)+'</strong><div class="muted">'+esc(l.error)+'</div></div>').join('')+'</div>':'')+'</section>').join('');document.querySelectorAll('button[data-k]').forEach(b=>b.onclick=()=>{const p=b.closest('[data-w]');void action(b.dataset.k,p.dataset.w,p.dataset.s)})}
-async function load(){try{const r=await fetch(base+'api/state',{cache:'no-store'});const x=await r.json();if(!r.ok)throw new Error(x.error);render(x)}catch(e){document.querySelector('#summary').textContent='Error: '+e.message}}void load();setInterval(load,5000);
-</script></body></html>`;
+  let size: number;
+  try {
+    size = statSync(filePath).size;
+  } catch {
+    sendJson(response, 404, { error: "Dashboard asset not found. Run 'npm run build'." });
+    return;
+  }
+
+  const extension = path.extname(filePath);
+  const contentType = extension === ".html" ? "text/html; charset=utf-8"
+    : extension === ".js" ? "text/javascript; charset=utf-8"
+      : extension === ".css" ? "text/css; charset=utf-8"
+        : "application/octet-stream";
+  response.writeHead(200, {
+    "content-type": contentType,
+    "content-length": size,
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+  });
+  createReadStream(filePath).pipe(response);
 }
 
 function waitForShutdown(server: ReturnType<typeof createServer>, tailscaleChild: ChildProcess | null): Promise<void> {

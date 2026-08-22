@@ -136,7 +136,9 @@ With no target, `stop` affects tunnels for the current worktree. `all` affects t
 livetree serve
 ```
 
-The dashboard binds to `127.0.0.1` and shows one card per active Git worktree, using its branch or primary-chat label, plus server health, Tailscale URLs, configured links, and QR codes. Its buttons start and stop managed dev servers and tailnet shares. Managed logs live below `.livetree/state/logs/`.
+The responsive SolidJS dashboard binds to `127.0.0.1` and organizes the current project into worktrees, then servers and configured links. It shows server health, Tailscale URLs, and QR codes, and its buttons start and stop managed dev servers and tailnet shares. Choose **Logs** on a running server to open the xterm-powered live output pane. Server logs live below `.livetree/state/logs/`, including foreground servers started with `livetree dev`.
+
+The project rail currently contains the repository that launched `livetree serve`. A future global catalog can extend it to repositories registered in `~/.livetree` without changing the worktree and server views.
 
 To open the dashboard on another device:
 
