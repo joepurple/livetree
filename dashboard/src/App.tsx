@@ -1,13 +1,14 @@
 import {
   ArrowUpRight, Check, ChevronLeft, ChevronRight, Copy, Folder, FolderGit2, Link2,
-  LoaderCircle, PanelLeftClose, PanelLeftOpen, Play, RadioTower, RefreshCw,
-  Server, Square, Terminal as TerminalIcon, TreePine, Wifi,
+  LoaderCircle, PanelLeftClose, PanelLeftOpen, Play, Plus, RadioTower, RefreshCw,
+  MonitorSmartphone, Server, Settings, Square, Terminal as TerminalIcon, Trash2, TreePine, TriangleAlert, Wifi, X,
 } from "lucide-solid";
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
+import { apiUrl, normalizeDesktopUrl, pickProjectFolder, readNativeInfo, runningInTauri, setApiBase, type NativeInfo } from "./native";
 import type { DashboardState, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "projects" | "worktrees" | "workspace";
@@ -24,10 +25,6 @@ function age(timestamp: number | null): string {
 function shortPath(value: string): string {
   const parts = value.split("/").filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : value;
-}
-
-function apiUrl(route: string): URL {
-  return new URL(`api/${route}`, document.baseURI);
 }
 
 function worktreeTitle(worktree: Worktree): string {
@@ -54,6 +51,9 @@ function storedWidth(key: string, fallback: number): number {
 
 export default function App() {
   let dashboardScrollY = 0;
+  let refreshTimer: number | undefined;
+  let nativeTimer: number | undefined;
+  let dashboardStarted = false;
   const [state, setState] = createSignal<DashboardState>();
   const [selectedProjectId, setSelectedProjectId] = createSignal<string>();
   const [selectedPath, setSelectedPath] = createSignal<string>();
@@ -67,6 +67,15 @@ export default function App() {
   const [worktreeWidth, setWorktreeWidth] = createSignal(storedWidth("livetree.worktreeRailWidth", 294));
   const [terminalWidth, setTerminalWidth] = createSignal(storedWidth("livetree.terminalWidth", 440));
   const [mobileView, setMobileView] = createSignal<MobileView>("projects");
+  const [nativeInfo, setNativeInfo] = createSignal<NativeInfo>();
+  const [appReady, setAppReady] = createSignal(!runningInTauri());
+  const [projectDialogOpen, setProjectDialogOpen] = createSignal(false);
+  const [projectPath, setProjectPath] = createSignal("");
+  const [projectFormError, setProjectFormError] = createSignal<string>();
+  const [projectToRemove, setProjectToRemove] = createSignal<Project>();
+  const [projectRemoveError, setProjectRemoveError] = createSignal<string>();
+  const [worktreeToRemove, setWorktreeToRemove] = createSignal<{ project: Project; worktree: Worktree }>();
+  const [worktreeRemoveError, setWorktreeRemoveError] = createSignal<string>();
 
   const selectedProject = createMemo(() => {
     const current = state();
@@ -102,6 +111,33 @@ export default function App() {
     }
   }
 
+  function startDashboard(): void {
+    if (dashboardStarted) return;
+    dashboardStarted = true;
+    void load();
+    refreshTimer = window.setInterval(() => void load(), 5_000);
+  }
+
+  function connectToDesktop(value: string): void {
+    const normalized = normalizeDesktopUrl(value);
+    window.localStorage.setItem("livetree.desktopUrl", normalized);
+    setApiBase(normalized);
+    setState(undefined);
+    setError(undefined);
+    setAppReady(true);
+    startDashboard();
+  }
+
+  function changeDesktop(): void {
+    window.localStorage.removeItem("livetree.desktopUrl");
+    setApiBase(undefined);
+    setState(undefined);
+    setError(undefined);
+    setAppReady(false);
+    dashboardStarted = false;
+    window.clearInterval(refreshTimer);
+  }
+
   async function action(kind: string, project: Project, worktree: Worktree, script: Script): Promise<void> {
     const key = `${project.id}:${worktree.path}:${script.script}:${kind}`;
     setBusy(key);
@@ -122,9 +158,142 @@ export default function App() {
     }
   }
 
+  async function saveProject(path: string): Promise<void> {
+    setBusy("project:add");
+    setProjectFormError(undefined);
+    try {
+      const response = await fetch(apiUrl("projects/add"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const payload = (await response.json()) as { error?: string; project?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Unable to add project");
+      setSelectedProjectId(payload.project);
+      setSelectedPath(undefined);
+      await load();
+      setProjectDialogOpen(false);
+      setProjectPath("");
+      setError(undefined);
+    } catch (caught) {
+      setProjectFormError(caught instanceof Error ? caught.message : String(caught));
+      setProjectDialogOpen(true);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function addProject(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    await saveProject(projectPath());
+  }
+
+  async function chooseProject(): Promise<void> {
+    if (!runningInTauri()) {
+      setProjectFormError(undefined);
+      setProjectDialogOpen(true);
+      return;
+    }
+    setBusy("project:pick");
+    try {
+      const selected = await pickProjectFolder();
+      setBusy(undefined);
+      if (!selected) return;
+      setProjectPath(selected);
+      await saveProject(selected);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setBusy(undefined);
+    }
+  }
+
+  function requestProjectRemoval(project: Project): void {
+    setProjectRemoveError(undefined);
+    setProjectToRemove(project);
+  }
+
+  async function confirmProjectRemoval(project: Project): Promise<void> {
+    setBusy(`project:remove:${project.id}`);
+    setProjectRemoveError(undefined);
+    try {
+      const response = await fetch(apiUrl("projects/remove"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: project.id }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Unable to remove project");
+      if (selectedProjectId() === project.id) {
+        setSelectedProjectId(undefined);
+        setSelectedPath(undefined);
+        setLogs(undefined);
+      }
+      await load();
+      setProjectToRemove(undefined);
+      setError(undefined);
+    } catch (caught) {
+      setProjectRemoveError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  function requestWorktreeRemoval(project: Project, worktree: Worktree): void {
+    setWorktreeRemoveError(undefined);
+    setWorktreeToRemove({ project, worktree });
+  }
+
+  async function confirmWorktreeRemoval(project: Project, worktree: Worktree): Promise<void> {
+    setBusy(`worktree:remove:${worktree.path}`);
+    setWorktreeRemoveError(undefined);
+    try {
+      const response = await fetch(apiUrl("worktrees/remove"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: project.id, worktree: worktree.path, force: true }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Unable to remove worktree");
+      setWorktreeToRemove(undefined);
+      setSelectedPath(undefined);
+      setLogs(undefined);
+      await load();
+      setError(undefined);
+      if (window.matchMedia("(max-width: 820px)").matches) {
+        setMobileView("worktrees");
+        history.replaceState({ ...history.state, livetreeMobileView: "worktrees", livetreeTerminal: undefined }, "");
+      }
+    } catch (caught) {
+      setWorktreeRemoveError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   onMount(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), 5_000);
+    if (!runningInTauri()) {
+      startDashboard();
+    } else {
+      const refreshNative = async () => {
+        try {
+          const info = await readNativeInfo();
+          setNativeInfo(info);
+          if (info.platform === "macos" && info.serverUrl && !appReady()) {
+            setApiBase(info.serverUrl);
+            setAppReady(true);
+            startDashboard();
+          }
+          if (info.platform === "ios" && !appReady()) {
+            const stored = window.localStorage.getItem("livetree.desktopUrl");
+            if (stored) connectToDesktop(stored);
+          }
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      };
+      void refreshNative();
+      nativeTimer = window.setInterval(() => void refreshNative(), 1_000);
+    }
     const mobileQuery = window.matchMedia("(max-width: 820px)");
     if (mobileQuery.matches) {
       const initial = history.state?.livetreeMobileView;
@@ -145,10 +314,48 @@ export default function App() {
         closeLogsNow();
       }
     };
+    let backSwipe: { pointerId: number; startX: number; startY: number } | undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        !mobileQuery.matches ||
+        !appReady() ||
+        event.pointerType !== "touch" ||
+        event.clientX > 28 ||
+        (!logs() && mobileView() === "projects")
+      ) {
+        return;
+      }
+      backSwipe = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      const swipe = backSwipe;
+      backSwipe = undefined;
+      if (!swipe || event.pointerId !== swipe.pointerId) return;
+      const distanceX = event.clientX - swipe.startX;
+      const distanceY = Math.abs(event.clientY - swipe.startY);
+      if (distanceX < 72 || distanceX <= distanceY * 1.5) return;
+      if (logs()) {
+        closeLogs();
+      } else if (mobileView() === "workspace") {
+        backMobile("worktrees");
+      } else if (mobileView() === "worktrees") {
+        backMobile("projects");
+      }
+    };
+    const onPointerCancel = () => {
+      backSwipe = undefined;
+    };
     window.addEventListener("popstate", onPopState);
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
     onCleanup(() => {
-      window.clearInterval(timer);
+      window.clearInterval(refreshTimer);
+      window.clearInterval(nativeTimer);
       window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
     });
   });
 
@@ -256,6 +463,7 @@ export default function App() {
   }
 
   return (
+    <Show when={appReady()} fallback={<ConnectionSetup platform={nativeInfo()?.platform} error={nativeInfo()?.error ?? error()} onConnect={connectToDesktop} />}>
     <div
       class="app-shell"
       classList={{
@@ -275,24 +483,52 @@ export default function App() {
             {projectCollapsed() ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </Button>
         </div>
-        <div class="rail-label">Projects</div>
+        <div class="project-rail__heading">
+          <div class="rail-label">Projects</div>
+          <Button size="icon" variant="ghost" class="project-add-button" aria-label="Add project" title="Add project" disabled={Boolean(busy())} onClick={() => void chooseProject()}>
+            {busy() === "project:pick" ? <LoaderCircle class="spin" size={14} /> : <Plus size={15} />}
+          </Button>
+        </div>
         <Show when={state()} fallback={<div class="project-skeleton" />}>
           {(current) => (
             <div class="project-list" aria-label="Projects">
               <For each={current().projects}>
                 {(project) => (
-                  <button class="project-item" classList={{ "project-item--active": selectedProject()?.id === project.id }} type="button" title={project.path} onClick={() => selectProject(project)}>
-                    <span class="project-item__icon"><FolderGit2 size={18} /></span>
-                    <span class="project-item__copy"><strong>{project.name}</strong><small>{project.worktrees.length} worktrees</small></span>
-                    <span class="project-item__count">{runningCount(project)}</span>
-                    <ChevronRight size={17} class="mobile-disclosure" />
-                  </button>
+                  <div class="project-row" classList={{ "project-row--active": selectedProject()?.id === project.id }}>
+                    <button class="project-item" type="button" title={project.path} onClick={() => selectProject(project)}>
+                      <span class="project-item__icon"><FolderGit2 size={18} /></span>
+                      <span class="project-item__copy"><strong>{project.name}</strong><small>{project.worktrees.length} worktrees</small></span>
+                      <span class="project-item__count">{runningCount(project)}</span>
+                      <ChevronRight size={17} class="mobile-disclosure" />
+                    </button>
+                    <button
+                      type="button"
+                      class="project-remove-button"
+                      aria-label={`Remove ${project.name} from project list`}
+                      title="Remove from list"
+                      disabled={Boolean(busy())}
+                      onClick={() => requestProjectRemoval(project)}
+                    >
+                      {busy() === `project:remove:${project.id}` ? <LoaderCircle class="spin" size={13} /> : <X size={13} />}
+                    </button>
+                  </div>
                 )}
               </For>
+              <Show when={current().projects.length === 0}>
+                <div class="project-list-empty"><FolderGit2 size={20} /><strong>No projects yet</strong><small>Add a project from the desktop app.</small></div>
+              </Show>
             </div>
           )}
         </Show>
-        <div class="project-rail__footer"><span class="pulse-dot" />Local daemon</div>
+        <div class="project-rail__footer">
+          <Show when={nativeInfo()?.platform === "ios"} fallback={
+            <Show when={nativeInfo()?.tailnetUrl} fallback={<span class="tailnet-status" title={nativeInfo()?.error ?? "Starting Tailscale Serve"}><MonitorSmartphone size={13} />{nativeInfo()?.error ? "iPhone link unavailable" : "Starting iPhone link"}</span>}>
+              {(url) => <button type="button" class="tailnet-copy" title={url()} onClick={() => void navigator.clipboard.writeText(url())}><MonitorSmartphone size={13} />Copy iPhone URL</button>}
+            </Show>
+          }>
+            <button type="button" class="tailnet-copy" onClick={changeDesktop}><Settings size={13} />Change desktop</button>
+          </Show>
+        </div>
         <div class="rail-resizer" role="separator" aria-label="Resize projects sidebar" aria-orientation="vertical" aria-valuemin="170" aria-valuemax="340" aria-valuenow={projectWidth()} onPointerDown={(event) => beginResize("project", event)} />
       </aside>
 
@@ -306,7 +542,7 @@ export default function App() {
         <header class="worktree-rail__header">
           <div class="worktree-rail__title">
             <Show when={projectCollapsed()}><Button size="icon" variant="ghost" class="rail-expand" aria-label="Expand projects sidebar" onClick={() => toggleRail("project")}><PanelLeftOpen size={16} /></Button></Show>
-            <h1>{selectedProject()?.name ?? "Loading"}</h1>
+            <h1>{selectedProject()?.name ?? (state() ? "No project" : "Loading")}</h1>
           </div>
           <div class="worktree-rail__controls">
             <Button size="icon" variant="ghost" class="refresh-button" aria-label="Refresh dashboard" onClick={() => void load(true)}>
@@ -333,7 +569,7 @@ export default function App() {
               );
             }}
           </For>
-          <Show when={filteredWorktrees().length === 0}><div class="empty-filter">No matching worktrees</div></Show>
+          <Show when={filteredWorktrees().length === 0}><div class="empty-filter">{selectedProject() ? "No matching worktrees" : "No worktrees"}</div></Show>
         </div>
         <div class="rail-resizer" role="separator" aria-label="Resize worktrees sidebar" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="440" aria-valuenow={worktreeWidth()} onPointerDown={(event) => beginResize("worktree", event)} />
       </aside>
@@ -350,8 +586,17 @@ export default function App() {
             <Show when={worktreeCollapsed()}><Button size="icon" variant="ghost" aria-label="Expand worktrees sidebar" onClick={() => toggleRail("worktree")}><PanelLeftOpen size={16} /></Button></Show>
           </div>
         </Show>
-        <Show when={error()}>{(message) => <div class="error-banner" role="alert"><strong>Something went wrong</strong><span>{message()}</span><Button size="sm" onClick={() => void load(true)}>Try again</Button></div>}</Show>
-        <Show when={selectedProject()} fallback={<LoadingState />}>
+        <Show when={error()}>{(message) => <div class="error-banner" role="alert"><strong>Something went wrong</strong><span>{message()}</span><Show when={nativeInfo()?.platform === "ios"}><Button size="sm" variant="outline" onClick={changeDesktop}>Change server</Button></Show><Button size="sm" onClick={() => void load(true)}>Try again</Button></div>}</Show>
+        <Show when={selectedProject()} fallback={
+          <Show when={state()} fallback={<LoadingState />}>
+            <div class="empty-projects-state">
+              <span><FolderGit2 size={24} /></span>
+              <h2>Add your first project</h2>
+              <p>Choose a Git repository with a .ltconf file to start managing its worktrees.</p>
+              <Button class="empty-projects-state__add" variant="primary" disabled={Boolean(busy())} onClick={() => void chooseProject()}>{busy() === "project:pick" ? <LoaderCircle class="spin" size={14} /> : <Folder size={15} />}Choose project folder</Button>
+            </div>
+          </Show>
+        }>
           {(project) => (
             <Show when={selectedWorktree()} fallback={<LoadingState />}>
               {(worktree) => (
@@ -362,6 +607,7 @@ export default function App() {
                   busy={busy()}
                   onAction={(kind, targetWorktree, script) => action(kind, project(), targetWorktree, script)}
                   onLogs={(script) => openLogs(project(), worktree(), script)}
+                  onRemove={() => requestWorktreeRemoval(project(), worktree())}
                 />
               )}
             </Show>
@@ -369,7 +615,103 @@ export default function App() {
         </Show>
       </main>
       <Show when={logs()}>{(selection) => <TerminalPage selection={selection()} onClose={closeLogs} onResizeStart={beginTerminalResize} width={terminalWidth()} />}</Show>
+      <Show when={projectDialogOpen()}>
+        <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy()) setProjectDialogOpen(false); }}>
+          <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="add-project-title" onKeyDown={(event) => { if (event.key === "Escape" && !busy()) setProjectDialogOpen(false); }}>
+            <header class="dialog-card__header">
+              <div><h2 id="add-project-title">Add project</h2><p>Enter the absolute path to a Git repository with a .ltconf file.</p></div>
+              <Button size="icon" variant="ghost" aria-label="Close add project dialog" disabled={Boolean(busy())} onClick={() => setProjectDialogOpen(false)}><X size={16} /></Button>
+            </header>
+            <form class="project-form" onSubmit={(event) => void addProject(event)}>
+              <label for="project-path">Project folder</label>
+              <input ref={(input) => queueMicrotask(() => input.focus())} id="project-path" type="text" autocomplete="off" autocapitalize="none" spellcheck={false} placeholder="/Users/you/code/project" value={projectPath()} onInput={(event) => setProjectPath(event.currentTarget.value)} />
+              <Show when={projectFormError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
+              <div class="dialog-card__actions">
+                <Button type="button" variant="ghost" disabled={Boolean(busy())} onClick={() => setProjectDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" variant="primary" disabled={!projectPath().trim() || Boolean(busy())}>
+                  {busy() === "project:add" ? <LoaderCircle class="spin" size={14} /> : <Plus size={14} />} Add project
+                </Button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </Show>
+      <Show when={worktreeToRemove()}>
+        {(selection) => (
+          <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy()) setWorktreeToRemove(undefined); }}>
+            <section class="dialog-card remove-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-worktree-title" onKeyDown={(event) => { if (event.key === "Escape" && !busy()) setWorktreeToRemove(undefined); }}>
+              <header class="dialog-card__header">
+                <div class="remove-confirmation-dialog__title"><span><TriangleAlert size={18} /></span><div><h2 id="remove-worktree-title">Remove worktree?</h2><p>{worktreeTitle(selection().worktree)}</p></div></div>
+                <Button size="icon" variant="ghost" aria-label="Close remove worktree dialog" disabled={Boolean(busy())} onClick={() => setWorktreeToRemove(undefined)}><X size={16} /></Button>
+              </header>
+              <p class="remove-confirmation-dialog__warning">This permanently deletes the worktree folder, including all uncommitted and untracked changes. The Git branch will be kept.</p>
+              <code class="remove-confirmation-dialog__path">{selection().worktree.path}</code>
+              <Show when={worktreeRemoveError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
+              <div class="dialog-card__actions">
+                <Button type="button" variant="ghost" disabled={Boolean(busy())} onClick={() => setWorktreeToRemove(undefined)}>Cancel</Button>
+                <Button type="button" variant="danger" disabled={Boolean(busy())} onClick={() => void confirmWorktreeRemoval(selection().project, selection().worktree)}>
+                  {busy() === `worktree:remove:${selection().worktree.path}` ? <LoaderCircle class="spin" size={14} /> : <Trash2 size={14} />} Remove worktree
+                </Button>
+              </div>
+            </section>
+          </div>
+        )}
+      </Show>
+      <Show when={projectToRemove()}>
+        {(project) => (
+          <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy()) setProjectToRemove(undefined); }}>
+            <section class="dialog-card remove-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-project-title" onKeyDown={(event) => { if (event.key === "Escape" && !busy()) setProjectToRemove(undefined); }}>
+              <header class="dialog-card__header">
+                <div class="remove-confirmation-dialog__title"><span><FolderGit2 size={18} /></span><div><h2 id="remove-project-title">Remove project from LiveTree?</h2><p>{project().name}</p></div></div>
+                <Button size="icon" variant="ghost" aria-label="Close remove project dialog" disabled={Boolean(busy())} onClick={() => setProjectToRemove(undefined)}><X size={16} /></Button>
+              </header>
+              <p class="remove-confirmation-dialog__warning">This only removes the saved project entry. The repository folder, its worktrees, and all project files will stay on disk.</p>
+              <code class="remove-confirmation-dialog__path">{project().path}</code>
+              <Show when={projectRemoveError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
+              <div class="dialog-card__actions">
+                <Button type="button" variant="ghost" disabled={Boolean(busy())} onClick={() => setProjectToRemove(undefined)}>Cancel</Button>
+                <Button type="button" variant="danger" disabled={Boolean(busy())} onClick={() => void confirmProjectRemoval(project())}>
+                  {busy() === `project:remove:${project().id}` ? <LoaderCircle class="spin" size={14} /> : <X size={14} />} Remove from list
+                </Button>
+              </div>
+            </section>
+          </div>
+        )}
+      </Show>
     </div>
+    </Show>
+  );
+}
+
+function ConnectionSetup(props: { platform?: NativeInfo["platform"]; error?: string; onConnect: (url: string) => void }) {
+  const [value, setValue] = createSignal("");
+  const [validation, setValidation] = createSignal<string>();
+
+  function submit(event: SubmitEvent): void {
+    event.preventDefault();
+    try {
+      props.onConnect(value());
+      setValidation(undefined);
+    } catch (caught) {
+      setValidation(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  return (
+    <main class="connection-setup">
+      <div class="connection-setup__card">
+        <span class="brand__mark"><TreePine size={28} /></span>
+        <Show when={props.platform === "ios"} fallback={<div><h1>Starting LiveTree</h1><p>The Mac app is launching its embedded dashboard service.</p></div>}>
+          <div><h1>Connect to LiveTree</h1><p>Open LiveTree on your Mac, copy its iPhone URL, and paste it here. Both devices must be signed into the same Tailscale network.</p></div>
+          <form onSubmit={submit}>
+            <label for="desktop-url">Tailnet dashboard URL</label>
+            <input id="desktop-url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" placeholder="https://your-mac.tailnet.ts.net" value={value()} onInput={(event) => setValue(event.currentTarget.value)} />
+            <Button type="submit" disabled={!value().trim()}>Connect</Button>
+          </form>
+        </Show>
+        <Show when={validation() ?? props.error}>{(message) => <div class="connection-setup__error" role="alert">{message()}</div>}</Show>
+      </div>
+    </main>
   );
 }
 
@@ -384,6 +726,7 @@ function WorktreeView(props: {
   busy?: string;
   onAction: (kind: string, worktree: Worktree, script: Script) => Promise<void>;
   onLogs: (script: Script) => void;
+  onRemove: () => void;
 }) {
   const [copiedPath, setCopiedPath] = createSignal<string>();
   let copiedTimer: number | undefined;
@@ -427,6 +770,11 @@ function WorktreeView(props: {
             </Show>
           </div>
         </div>
+        <Show when={!props.worktree.isMain}>
+          <Button class="remove-worktree-button" size="icon" variant="danger" aria-label="Remove worktree" title="Remove worktree" disabled={Boolean(props.busy)} onClick={() => void props.onRemove()}>
+            {props.busy === `worktree:remove:${props.worktree.path}` ? <LoaderCircle class="spin" size={14} /> : <Trash2 size={14} />}
+          </Button>
+        </Show>
       </header>
 
       <section class="section-block">

@@ -6,11 +6,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readLtConfig } from "../config.js";
 import { CliError, errorMessage } from "../errors.js";
+import { git } from "../git.js";
 import { interpolateTemplate } from "../interpolate.js";
 import { portlessName } from "../naming.js";
 import { ensureProxyRunning, probeAppReachable, proxyInfo, urlForName } from "../portless.js";
 import { stopProcessGroupAndWait } from "../processes.js";
-import { isConfiguredProject, registeredProjectPaths } from "../projects.js";
+import { isConfiguredProject, registerProject, registeredProjectPaths, unregisterProject } from "../projects.js";
 import { qrSvg, qrTerminal } from "../qr.js";
 import {
   clearTunnelEnvPending,
@@ -31,7 +32,7 @@ const DEFAULT_PORT = 43117;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_INITIAL_LOG_BYTES = 256 * 1024;
 
-type ActionBody = { project?: unknown; worktree?: unknown; script?: unknown };
+type ActionBody = { project?: unknown; worktree?: unknown; script?: unknown; path?: unknown; force?: unknown };
 
 type DashboardProject = {
   id: string;
@@ -39,7 +40,7 @@ type DashboardProject = {
   config: LtConfig;
 };
 
-export function resolveServeContext(cwd: string): ProjectContext {
+export function resolveServeContext(cwd: string): ProjectContext | null {
   const candidates = [cwd, ...registeredProjectPaths()];
   const seen = new Set<string>();
 
@@ -55,15 +56,15 @@ export function resolveServeContext(cwd: string): ProjectContext {
     }
   }
 
-  throw new CliError(
-    "No saved livetree projects are available. Run a livetree command inside a Git worktree with a .ltconf first.",
-  );
+  return null;
 }
 
-export async function runServeCommand(context: ProjectContext, args: string[]): Promise<void> {
+export async function runServeCommand(context: ProjectContext | null, args: string[]): Promise<void> {
   const options = parseServeArgs(args);
-  const config = readLtConfig(context);
-  await reconcileManagedProcesses(context, config);
+  if (context) {
+    const config = readLtConfig(context);
+    await reconcileManagedProcesses(context, config);
+  }
   const basePath = "/";
   const server = createServer((request, response) => {
     void handleRequest(context, basePath, request, response);
@@ -84,25 +85,33 @@ export async function runServeCommand(context: ProjectContext, args: string[]): 
   console.log(`Dashboard: ${localUrl}`);
 
   let tailscaleChild: ChildProcess | null = null;
-  if (options.tailscale) {
-    const tailscale = readTailscaleInfo();
-    const httpsPort = nextTailscaleServePort(usedTailscaleServePorts(tailscale.binPath));
-    const handle = startTailscaleServe(tailscale, address.port, httpsPort);
-    tailscaleChild = handle.child;
-    const tailnetUrl = tailscaleUrl(tailscale, httpsPort);
-    try {
-      await waitForTailscaleServe(handle, tailnetUrl);
-    } catch (error) {
-      if (handle.child.pid) await stopProcessGroupAndWait(handle.child.pid);
+  try {
+    if (options.tailscale) {
+      const tailscale = readTailscaleInfo();
+      const httpsPort = nextTailscaleServePort(usedTailscaleServePorts(tailscale.binPath));
+      const handle = startTailscaleServe(tailscale, address.port, httpsPort);
+      tailscaleChild = handle.child;
+      const tailnetUrl = tailscaleUrl(tailscale, httpsPort);
+      try {
+        await waitForTailscaleServe(handle, tailnetUrl);
+      } catch (error) {
+        if (handle.child.pid) await stopProcessGroupAndWait(handle.child.pid);
+        tailscaleChild = null;
+        throw error;
+      }
+      console.log(`Tailnet dashboard: ${tailnetUrl}`);
+      console.log(qrTerminal(tailnetUrl));
+    }
+  } catch (error) {
+    if (!options.tailscaleOptional) {
       server.close();
       throw error;
     }
-    console.log(`Tailnet dashboard: ${tailnetUrl}`);
-    console.log(qrTerminal(tailnetUrl));
+    console.error(`Tailnet dashboard unavailable: ${errorMessage(error)}`);
   }
 
   console.error("Press Ctrl-C to stop.");
-  await waitForShutdown(server, tailscaleChild);
+  await waitForShutdown(server, tailscaleChild, options.parentPid);
 }
 
 export async function reconcileManagedProcesses(
@@ -133,34 +142,52 @@ export async function reconcileManagedProcesses(
   }
 }
 
-function parseServeArgs(args: string[]): { tailscale: boolean; port: number } {
+function parseServeArgs(args: string[]): { tailscale: boolean; tailscaleOptional: boolean; port: number; parentPid: number | null } {
   let tailscale = false;
+  let tailscaleOptional = false;
   let port = DEFAULT_PORT;
+  let parentPid: number | null = null;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--tailscale") {
       tailscale = true;
+    } else if (arg === "--tailscale-optional") {
+      tailscale = true;
+      tailscaleOptional = true;
     } else if (arg === "--port") {
       const value = Number.parseInt(args[index + 1] ?? "", 10);
       if (!Number.isInteger(value) || value < 0 || value > 65535) {
-        throw new CliError("Usage: livetree serve [--tailscale] [--port <number>]");
+        throw new CliError("Usage: livetree serve [--tailscale|--tailscale-optional] [--port <number>]");
       }
       port = value;
       index += 1;
+    } else if (arg === "--parent-pid") {
+      const value = Number.parseInt(args[index + 1] ?? "", 10);
+      if (!Number.isInteger(value) || value <= 0) {
+        throw new CliError("Usage: livetree serve [--tailscale|--tailscale-optional] [--port <number>]");
+      }
+      parentPid = value;
+      index += 1;
     } else {
-      throw new CliError("Usage: livetree serve [--tailscale] [--port <number>]");
+      throw new CliError("Usage: livetree serve [--tailscale|--tailscale-optional] [--port <number>]");
     }
   }
-  return { tailscale, port };
+  return { tailscale, tailscaleOptional, port, parentPid };
 }
 
 async function handleRequest(
-  originalContext: ProjectContext,
+  originalContext: ProjectContext | null,
   basePath: string,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
   try {
+    applyCors(request, response);
+    if (request.method === "OPTIONS") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
     if (basePath !== "/" && requestUrl.pathname === basePath.slice(0, -1)) {
       response.writeHead(302, { location: basePath });
@@ -182,8 +209,8 @@ async function handleRequest(
     } else if (request.method === "GET" && route === "/api/logs") {
       streamServerLogs(originalContext, requestUrl, request, response);
     } else if (request.method === "POST" && route.startsWith("/api/")) {
-      await handleAction(originalContext, route, await readJsonBody(request));
-      sendJson(response, 200, { ok: true });
+      const result = await handleAction(originalContext, route, await readJsonBody(request));
+      sendJson(response, 200, { ok: true, ...result });
     } else {
       sendJson(response, 404, { error: "Not found" });
     }
@@ -192,8 +219,27 @@ async function handleRequest(
   }
 }
 
+function applyCors(request: IncomingMessage, response: ServerResponse): void {
+  const origin = request.headers.origin;
+  if (!origin || !isTrustedAppOrigin(origin)) return;
+  response.setHeader("access-control-allow-origin", origin);
+  response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  response.setHeader("access-control-allow-headers", "content-type");
+  response.setHeader("vary", "Origin");
+}
+
+function isTrustedAppOrigin(origin: string): boolean {
+  if (["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"].includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    return ["localhost", "127.0.0.1", "::1"].includes(url.hostname) && ["http:", "https:"].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+
 function streamServerLogs(
-  originalContext: ProjectContext,
+  originalContext: ProjectContext | null,
   requestUrl: URL,
   request: IncomingMessage,
   response: ServerResponse,
@@ -247,7 +293,7 @@ function streamServerLogs(
   request.once("close", () => clearInterval(timer));
 }
 
-async function dashboardState(originalContext: ProjectContext): Promise<object> {
+async function dashboardState(originalContext: ProjectContext | null): Promise<object> {
   const projects = await Promise.all(dashboardProjects(originalContext).map(dashboardProjectState));
   return { generatedAtMs: Date.now(), projects };
 }
@@ -304,28 +350,30 @@ async function dashboardProjectState(project: DashboardProject): Promise<object>
   return { id, name: config.name, path: context.mainRoot, worktrees };
 }
 
-function dashboardProjects(originalContext: ProjectContext): DashboardProject[] {
+function dashboardProjects(_originalContext: ProjectContext | null): DashboardProject[] {
   const projects: DashboardProject[] = [];
   const seen = new Set<string>();
 
-  for (const projectPath of [originalContext.mainRoot, ...registeredProjectPaths()]) {
+  for (const projectPath of registeredProjectPaths()) {
     try {
       const context = buildProjectContext(projectPath);
       if (seen.has(context.mainRoot)) continue;
       const config = readLtConfig(context);
       seen.add(context.mainRoot);
       projects.push({ id: context.mainRoot, context, config });
-    } catch (error) {
-      if (projectPath === originalContext.mainRoot) throw error;
-    }
+    } catch {}
   }
 
   return projects;
 }
 
-function requireDashboardProject(originalContext: ProjectContext, value: unknown): DashboardProject {
+function requireDashboardProject(originalContext: ProjectContext | null, value: unknown): DashboardProject {
   const projects = dashboardProjects(originalContext);
-  if (value === null || value === undefined || value === "") return projects[0]!;
+  if (value === null || value === undefined || value === "") {
+    const project = projects[0];
+    if (!project) throw new CliError("No LiveTree projects are saved.");
+    return project;
+  }
   if (typeof value !== "string") throw new CliError("Dashboard request requires a project id.");
   const project = projects.find((candidate) => candidate.id === value);
   if (!project) throw new CliError(`Unknown project: ${value}`);
@@ -348,10 +396,38 @@ function linkResolver(context: ProjectContext, config: LtConfig, worktree: Workt
   };
 }
 
-async function handleAction(originalContext: ProjectContext, route: string, body: ActionBody): Promise<void> {
+async function handleAction(originalContext: ProjectContext | null, route: string, body: ActionBody): Promise<object> {
+  if (route === "/api/projects/add") {
+    if (typeof body.path !== "string" || !body.path.trim()) {
+      throw new CliError("Choose a project folder to add.");
+    }
+    const context = buildProjectContext(body.path.trim());
+    readLtConfig(context);
+    registerProject(context.mainRoot);
+    return { project: context.mainRoot };
+  }
+
+  if (route === "/api/projects/remove") {
+    const { id } = requireDashboardProject(originalContext, body.project);
+    unregisterProject(id);
+    return {};
+  }
+
   const { context, config } = requireDashboardProject(originalContext, body.project);
   const refreshed = buildProjectContext(context.currentRoot);
   const worktree = requireWorktree(refreshed, body.worktree);
+
+  if (route === "/api/worktrees/remove") {
+    if (worktree.isMain) throw new CliError("The main worktree cannot be removed.");
+    git(
+      ["worktree", "remove", ...(body.force === true ? ["--force"] : []), worktree.path],
+      refreshed.mainRoot,
+      `Could not remove '${worktree.label}'. Unlock it and try again.`,
+    );
+    await reconcileManagedProcesses(buildProjectContext(refreshed.mainRoot), config);
+    return {};
+  }
+
   const script = requireScript(config, body.script);
   const name = portlessName(config.name, worktree, script);
 
@@ -389,6 +465,7 @@ async function handleAction(originalContext: ProjectContext, route: string, body
   } else {
     throw new CliError("Unknown dashboard action.");
   }
+  return {};
 }
 
 function requireWorktree(context: ProjectContext, value: unknown): WorktreeChoice {
@@ -459,12 +536,20 @@ function sendDashboardAsset(response: ServerResponse, relativePath: string): voi
   createReadStream(filePath).pipe(response);
 }
 
-function waitForShutdown(server: ReturnType<typeof createServer>, tailscaleChild: ChildProcess | null): Promise<void> {
+function waitForShutdown(server: ReturnType<typeof createServer>, tailscaleChild: ChildProcess | null, parentPid: number | null = null): Promise<void> {
   return new Promise((resolve) => {
     let stopping = false;
+    const parentTimer = parentPid === null ? null : setInterval(() => {
+      try {
+        process.kill(parentPid, 0);
+      } catch {
+        stop();
+      }
+    }, 1_000);
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
+      if (parentTimer) clearInterval(parentTimer);
       if (tailscaleChild?.pid) {
         try { process.kill(-tailscaleChild.pid, "SIGTERM"); } catch { try { process.kill(tailscaleChild.pid, "SIGTERM"); } catch { /* gone */ } }
       }

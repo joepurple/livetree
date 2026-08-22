@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "iOS": {
+      "developmentTeam": "MWFG72ZNHU"
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "LiveTree",
+        "fullscreen": true
+      }
+    ]
+  }
+}

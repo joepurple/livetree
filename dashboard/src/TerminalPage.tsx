@@ -4,6 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import { ArrowLeft, X } from "lucide-solid";
 import { createSignal, onCleanup, onMount } from "solid-js";
 import { Button } from "./components/ui/button";
+import { apiUrl } from "./native";
 import type { LogSelection } from "./types";
 
 export function TerminalPage(props: { selection: LogSelection; onClose: () => void; onResizeStart: (event: PointerEvent) => void; width: number }) {
@@ -48,7 +49,7 @@ export function TerminalPage(props: { selection: LogSelection; onClose: () => vo
     observer.observe(container);
 
     const controller = new AbortController();
-    const url = new URL("api/logs", document.baseURI);
+    const url = apiUrl("logs");
     url.searchParams.set("project", props.selection.project.id);
     url.searchParams.set("worktree", props.selection.worktree.path);
     url.searchParams.set("script", props.selection.script.script);

@@ -140,7 +140,7 @@ With no target, `stop` affects tunnels for the current worktree. `all` affects t
 livetree serve
 ```
 
-The responsive SolidJS dashboard binds to `127.0.0.1` and organizes projects into worktrees, then servers and configured links. It shows server health, Tailscale URLs, and QR codes, and its buttons start and stop managed dev servers and tailnet shares. Choose **Logs** on a running server to open the xterm-powered live output pane. Server logs live below each project's `.livetree/state/logs/`, including foreground servers started with `livetree dev`.
+The responsive SolidJS dashboard binds to `127.0.0.1` and organizes projects into worktrees, then servers and configured links. It shows server health, Tailscale URLs, and QR codes, and its buttons start and stop managed dev servers and tailnet shares. The desktop layout can add repositories with the native folder picker or remove them from the saved project list after confirmation. Desktop and mobile can remove non-main worktrees after an explicit confirmation that warns that uncommitted and untracked changes will be permanently deleted; locked worktrees are rejected, and the associated branch is preserved. Choose **Logs** on a running server to open the xterm-powered live output pane. Server logs live below each project's `.livetree/state/logs/`, including foreground servers started with `livetree dev`.
 
 Every configured repository where you run a livetree command is added to `~/.livetree/projects.json`. The project rail shows all valid registered repositories, most recently used first after the repository that launched the dashboard. Missing repositories and repositories without a valid `.ltconf` are ignored. Set `LIVETREE_HOME` to use a different catalog directory, which is also useful for isolated testing.
 
@@ -153,6 +153,30 @@ livetree serve --tailscale
 This exposes the dashboard through Tailscale Serve and prints its tailnet-only URL and a terminal QR code. Open it from a phone running Tailscale and signed into an authorized tailnet account; Tailscale provides the authentication and access policy.
 
 Use `--port <number>` to change the local dashboard port; `--port 0` asks the operating system for a free port.
+
+## Native macOS and iOS apps
+
+The Tauri macOS app bundles Node.js and the LiveTree server, so opening the app replaces running `livetree serve` in a terminal. It starts the dashboard on an available loopback port—even when no projects have been saved—and tries to publish that dashboard with Tailscale Serve. If Tailscale is unavailable, the local desktop dashboard still starts.
+
+Build the Apple Silicon Mac app and DMG:
+
+```sh
+npm run app:build
+```
+
+The outputs are written below `src-tauri/target/release/bundle/`. The current sidecar build targets the host Mac architecture; produce the app on each architecture you intend to distribute.
+
+The iOS app is a client only. On first launch it asks for the **Tailnet dashboard URL** displayed in the Mac app. Install Tailscale on the iPhone, sign into an authorized account on the same tailnet, then paste that HTTPS URL. The value is kept on-device and can be changed from the project screen.
+
+Initialize the generated Xcode project once, then develop or build it with Tauri:
+
+```sh
+npm run ios:init
+npm run ios:dev
+npm run ios:build
+```
+
+iOS builds require Xcode, CocoaPods, `xcodegen`, and Rust's Apple mobile targets. Follow the [current Tauri iOS prerequisites](https://v2.tauri.app/start/prerequisites/#ios) and provide your Apple team with either `APPLE_DEVELOPMENT_TEAM` or `bundle.iOS.developmentTeam` when signing for a physical device or archive. The generated Xcode project lives at `src-tauri/gen/apple/livetree-app.xcodeproj`.
 
 ## Listing worktrees
 

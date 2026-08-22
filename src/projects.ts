@@ -36,6 +36,15 @@ export function registeredProjectPaths(): string[] {
     .map((project) => project.path);
 }
 
+export function unregisterProject(mainRoot: string): boolean {
+  const projectPath = canonicalProjectPath(mainRoot);
+  const catalog = readProjectCatalog();
+  const projects = catalog.projects.filter((project) => project.path !== projectPath);
+  if (projects.length === catalog.projects.length) return false;
+  writeProjectCatalog({ version: 1, projects });
+  return true;
+}
+
 function canonicalProjectPath(projectPath: string): string {
   try {
     return realpathSync(projectPath);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { reconcileManagedProcesses, resolveServeContext } from "../../dist/commands/serve.js";
@@ -65,6 +65,63 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   assert.equal(json.projects[1].id, secondRepo);
   assert.equal(json.projects[1].worktrees[0].scripts[0].script, "api");
   assert.equal(json.projects[1].worktrees[0].scripts[0].running, true);
+
+  const addedRepo = createGitRepo(t, "serve-added");
+  writeFileSync(path.join(addedRepo, ".ltconf"), "name: added\n");
+  const addProject = await fetch(`${url}api/projects/add`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: addedRepo }),
+  });
+  assert.equal(addProject.status, 200);
+  assert.equal((await addProject.json()).project, addedRepo);
+  const addedState = await (await fetch(`${url}api/state`)).json();
+  assert.deepEqual(addedState.projects.map((project) => project.name), ["added", "demo", "second"]);
+
+  const removeProject = await fetch(`${url}api/projects/remove`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project: addedRepo }),
+  });
+  assert.equal(removeProject.status, 200);
+  const removedProjectState = await (await fetch(`${url}api/state`)).json();
+  assert.deepEqual(removedProjectState.projects.map((project) => project.name), ["demo", "second"]);
+
+  const linked = path.join(path.dirname(repo), "serve-linked");
+  execFileSync("git", ["worktree", "add", "-b", "remove-me", linked], { cwd: repo, stdio: "ignore" });
+  t.after(() => {
+    try { execFileSync("git", ["worktree", "remove", "--force", linked], { cwd: repo, stdio: "ignore" }); } catch {}
+  });
+  const removeMain = await fetch(`${url}api/worktrees/remove`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project: repo, worktree: repo }),
+  });
+  assert.equal(removeMain.status, 400);
+  assert.match((await removeMain.json()).error, /main worktree cannot be removed/i);
+  writeFileSync(path.join(linked, "uncommitted.txt"), "keep me\n");
+  const refuseDirtyWorktree = await fetch(`${url}api/worktrees/remove`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project: repo, worktree: linked }),
+  });
+  assert.equal(refuseDirtyWorktree.status, 400);
+  assert.equal(existsSync(linked), true);
+  const removeWorktree = await fetch(`${url}api/worktrees/remove`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project: repo, worktree: linked, force: true }),
+  });
+  assert.equal(removeWorktree.status, 200);
+  assert.equal(existsSync(linked), false);
+
+  const preflight = await fetch(`${url}api/dev/start`, {
+    method: "OPTIONS",
+    headers: { origin: "tauri://localhost", "access-control-request-method": "POST" },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "tauri://localhost");
+  assert.match(preflight.headers.get("access-control-allow-methods"), /POST/);
 
   const controller = new AbortController();
   const logs = await fetch(`${url}api/logs?project=${encodeURIComponent(repo)}&worktree=${encodeURIComponent(repo)}&script=web`, { signal: controller.signal });
@@ -146,6 +203,43 @@ test("resolves serve from outside Git using the most recently used saved project
     const context = resolveServeContext(outside);
     assert.equal(context.mainRoot, newerRepo);
   });
+});
+
+test("serves from outside Git without any saved projects", async (t) => {
+  const outside = tempDir("serve-empty-outside", t);
+  const livetreeHome = tempDir("serve-empty-home", t);
+
+  await withEnv({ LIVETREE_HOME: livetreeHome }, async () => {
+    assert.equal(resolveServeContext(outside), null);
+  });
+
+  const child = spawn(process.execPath, [cliPath, "serve", "--port", "0"], {
+    cwd: outside,
+    env: { ...process.env, LIVETREE_HOME: livetreeHome },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => { if (child.exitCode === null) child.kill("SIGTERM"); });
+  const output = await waitForOutput(child.stdout, /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/);
+  const url = /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(output)[1];
+  const state = await fetch(`${url}api/state`);
+  assert.equal(state.status, 200);
+  assert.deepEqual((await state.json()).projects, []);
+
+  const repo = createGitRepo(t, "serve-empty-add");
+  writeFileSync(path.join(repo, ".ltconf"), "name: first\n");
+  const added = await fetch(`${url}api/projects/add`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: repo }),
+  });
+  assert.equal(added.status, 200);
+  const removed = await fetch(`${url}api/projects/remove`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project: repo }),
+  });
+  assert.equal(removed.status, 200);
+  assert.deepEqual((await (await fetch(`${url}api/state`)).json()).projects, []);
 });
 
 test("prefers the current configured project when resolving serve", async (t) => {

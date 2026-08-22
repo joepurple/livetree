@@ -15,7 +15,7 @@ const usage = `Usage:
   livetree dev <script> [args...]
   livetree tunnel <script>
   livetree tunnel stop [<script>|all]
-  livetree serve [--tailscale] [--port <number>]
+  livetree serve [--tailscale|--tailscale-optional] [--port <number>]
   livetree <script> [args...]
 
 Configuration is read from .ltconf in the main worktree.`;
@@ -32,11 +32,16 @@ async function main(): Promise<void> {
   }
 
   const command = args[0]!;
-  const context = command === "serve"
-    ? resolveServeContext(process.cwd())
-    : ["init", "ls"].includes(command)
-      ? buildProjectContext(process.cwd())
-      : buildFastProjectContext(process.cwd());
+  if (command === "serve") {
+    const context = resolveServeContext(process.cwd());
+    if (context && isConfiguredProject(context.mainRoot)) registerProject(context.mainRoot);
+    await runServeCommand(context, args.slice(1));
+    return;
+  }
+
+  const context = ["init", "ls"].includes(command)
+    ? buildProjectContext(process.cwd())
+    : buildFastProjectContext(process.cwd());
 
   if (isConfiguredProject(context.mainRoot)) {
     registerProject(context.mainRoot);
@@ -51,8 +56,6 @@ async function main(): Promise<void> {
     await runDevScript(context, args.slice(1));
   } else if (command === "tunnel") {
     await runTunnelCommand(context, args.slice(1));
-  } else if (command === "serve") {
-    await runServeCommand(context, args.slice(1));
   } else {
     await runDevScript(context, args, { shortcut: true });
   }

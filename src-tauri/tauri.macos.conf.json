@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/livetree-node"],
+    "resources": {
+      "resources/livetree/": "livetree/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-",
+      "entitlements": "entitlements.plist"
+    }
+  }
+}

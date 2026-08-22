@@ -13,10 +13,19 @@
     "build": "tsc && vite build --config dashboard/vite.config.ts",
     "check": "tsc --noEmit && tsc --noEmit -p dashboard/tsconfig.json",
     "dashboard": "npm run build && node dist/cli.js serve",
+    "dashboard:dev": "vite --config dashboard/vite.config.ts",
+    "tauri": "tauri",
+    "tauri:prepare": "npm run build && node scripts/prepare-tauri-sidecar.mjs",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build --bundles app,dmg",
+    "ios:init": "tauri ios init --skip-targets-install",
+    "ios:dev": "tauri ios dev",
+    "ios:build": "tauri ios build",
     "test": "npm run build && node --test --experimental-test-coverage $(find src -path '*/tests/*.test.mjs' -print)",
     "link": "npm run build && npm link"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^24.0.0",
     "typescript": "^5.8.0",
     "vite": "^6.4.3",
@@ -26,6 +35,8 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "lucide-solid": "^1.33.0",
