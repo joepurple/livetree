@@ -34,13 +34,20 @@ export type Worktree = {
   links: Link[];
 };
 
-export type DashboardState = {
-  project: string;
-  generatedAtMs: number;
+export type Project = {
+  id: string;
+  name: string;
+  path: string;
   worktrees: Worktree[];
 };
 
+export type DashboardState = {
+  generatedAtMs: number;
+  projects: Project[];
+};
+
 export type LogSelection = {
+  project: Project;
   worktree: Worktree;
   script: Script;
 };

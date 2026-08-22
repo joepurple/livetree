@@ -4,12 +4,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { reconcileManagedProcesses } from "../../dist/commands/serve.js";
+import { registerProject } from "../../dist/projects.js";
 import { readServerEntries, readTunnelEntries, writeServerEntry, writeTunnelEntry } from "../../dist/registry.js";
-import { cliPath, createGitRepo } from "./helpers.mjs";
+import { cliPath, createGitRepo, tempDir, withEnv } from "./helpers.mjs";
 
 test("serves dashboard HTML and JSON on loopback", async (t) => {
   const repo = createGitRepo(t, "serve");
+  const secondRepo = createGitRepo(t, "serve-second");
+  const livetreeHome = tempDir("serve-home", t);
   writeFileSync(path.join(repo, ".ltconf"), `name: demo\ndev:\n  web: node server.mjs\nlinks:\n  web: \${url:web}\n`);
+  writeFileSync(path.join(secondRepo, ".ltconf"), `name: second\ndev:\n  api: node api.mjs\n`);
+  await withEnv({ LIVETREE_HOME: livetreeHome }, async () => registerProject(secondRepo, 1));
   const stateDir = path.join(repo, ".livetree", "state");
   const logPath = path.join(stateDir, "logs", "demo-main-web.log");
   mkdirSync(path.dirname(logPath), { recursive: true });
@@ -20,7 +25,21 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
     url: "https://demo-main-web.localhost:1355", envFingerprint: "test", tunneled: false,
     startedAtMs: Date.now(), managed: true, logPath,
   }));
-  const child = spawn(process.execPath, [cliPath, "serve", "--port", "0"], { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
+  const secondStateDir = path.join(secondRepo, ".livetree", "state");
+  const secondLogPath = path.join(secondStateDir, "logs", "second-main-api.log");
+  mkdirSync(path.dirname(secondLogPath), { recursive: true });
+  mkdirSync(path.join(secondStateDir, "servers"), { recursive: true });
+  writeFileSync(secondLogPath, "second project api ready\n");
+  writeFileSync(path.join(secondStateDir, "servers", "second-main-api.json"), JSON.stringify({
+    name: "second-main-api", script: "api", worktree: secondRepo, pid: process.pid,
+    url: "https://second-main-api.localhost:1355", envFingerprint: "test", tunneled: false,
+    startedAtMs: Date.now(), managed: true, logPath: secondLogPath,
+  }));
+  const child = spawn(process.execPath, [cliPath, "serve", "--port", "0"], {
+    cwd: repo,
+    env: { ...process.env, LIVETREE_HOME: livetreeHome },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   t.after(() => { if (child.exitCode === null) child.kill("SIGTERM"); });
   const output = await waitForOutput(child.stdout, /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/);
   const url = /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(output)[1];
@@ -36,31 +55,46 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   const state = await fetch(`${url}api/state`);
   assert.equal(state.status, 200);
   const json = await state.json();
-  assert.equal(json.project, "demo");
-  assert.equal(json.worktrees[0].scripts[0].script, "web");
-  assert.equal(json.worktrees[0].links[0].url, "https://demo-main-web.localhost:1355");
-  assert.equal(json.worktrees[0].chat, null);
-  assert.equal("chats" in json.worktrees[0], false);
-  assert.equal(json.worktrees[0].scripts[0].logPath, logPath);
+  assert.deepEqual(json.projects.map((project) => project.name), ["demo", "second"]);
+  assert.equal(json.projects[0].id, repo);
+  assert.equal(json.projects[0].worktrees[0].scripts[0].script, "web");
+  assert.equal(json.projects[0].worktrees[0].links[0].url, "https://demo-main-web.localhost:1355");
+  assert.equal(json.projects[0].worktrees[0].chat, null);
+  assert.equal("chats" in json.projects[0].worktrees[0], false);
+  assert.equal(json.projects[0].worktrees[0].scripts[0].logPath, logPath);
+  assert.equal(json.projects[1].id, secondRepo);
+  assert.equal(json.projects[1].worktrees[0].scripts[0].script, "api");
+  assert.equal(json.projects[1].worktrees[0].scripts[0].running, true);
 
   const controller = new AbortController();
-  const logs = await fetch(`${url}api/logs?worktree=${encodeURIComponent(repo)}&script=web`, { signal: controller.signal });
+  const logs = await fetch(`${url}api/logs?project=${encodeURIComponent(repo)}&worktree=${encodeURIComponent(repo)}&script=web`, { signal: controller.signal });
   assert.equal(logs.status, 200);
   const chunk = await logs.body.getReader().read();
   controller.abort();
   assert.match(new TextDecoder().decode(chunk.value), /ready on port 4173/);
+
+  const secondController = new AbortController();
+  const secondLogs = await fetch(`${url}api/logs?project=${encodeURIComponent(secondRepo)}&worktree=${encodeURIComponent(secondRepo)}&script=api`, { signal: secondController.signal });
+  assert.equal(secondLogs.status, 200);
+  const secondChunk = await secondLogs.body.getReader().read();
+  secondController.abort();
+  assert.match(new TextDecoder().decode(secondChunk.value), /second project api ready/);
   child.kill("SIGTERM");
   await new Promise((resolve) => child.once("exit", resolve));
 
-  const restarted = spawn(process.execPath, [cliPath, "serve", "--port", "0"], { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
+  const restarted = spawn(process.execPath, [cliPath, "serve", "--port", "0"], {
+    cwd: repo,
+    env: { ...process.env, LIVETREE_HOME: livetreeHome },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   t.after(() => { if (restarted.exitCode === null) restarted.kill("SIGTERM"); });
   const restartedOutput = await waitForOutput(restarted.stdout, /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/);
   const restartedUrl = /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(restartedOutput)[1];
   const recoveredState = await fetch(`${restartedUrl}api/state`);
   assert.equal(recoveredState.status, 200);
   const recoveredJson = await recoveredState.json();
-  assert.equal(recoveredJson.worktrees[0].scripts[0].running, true);
-  assert.equal(recoveredJson.worktrees[0].scripts[0].pid, process.pid);
+  assert.equal(recoveredJson.projects[0].worktrees[0].scripts[0].running, true);
+  assert.equal(recoveredJson.projects[0].worktrees[0].scripts[0].pid, process.pid);
 });
 
 test("reconciles managed processes without losing valid dashboard state", async (t) => {

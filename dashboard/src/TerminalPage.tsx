@@ -48,6 +48,7 @@ export function TerminalPage(props: { selection: LogSelection; onClose: () => vo
 
     const controller = new AbortController();
     const url = new URL("api/logs", document.baseURI);
+    url.searchParams.set("project", props.selection.project.id);
     url.searchParams.set("worktree", props.selection.worktree.path);
     url.searchParams.set("script", props.selection.script.script);
 

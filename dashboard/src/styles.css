@@ -36,11 +36,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .project-rail, .worktree-rail { min-height: 100vh; border-right: 1px solid var(--line); }
 .project-rail { position: sticky; top: 0; height: 100vh; padding: 16px 12px; background: #0d1013; display: flex; flex-direction: column; }
 .project-rail__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 24px; }
-.brand { min-width: 0; display: flex; align-items: center; gap: 9px; color: #f3f7f4; font-weight: 700; font-size: 17px; letter-spacing: -.03em; }
-.brand__mark { flex: 0 0 auto; display: grid; place-items: center; width: 31px; height: 31px; border: 1px solid rgba(255,255,255,.22); border-radius: 9px; color: var(--text); background: var(--green-wash); }
+.brand { min-width: 0; display: flex; align-items: center; gap: 7px; color: #f3f7f4; font-weight: 700; font-size: 14px; letter-spacing: -.025em; }
+.brand__mark { flex: 0 0 auto; display: grid; place-items: center; width: 20px; height: 20px; color: var(--text); }
 .rail-toggle { flex: 0 0 auto; color: #7e8882; }
 .rail-label, .eyebrow { color: #737e78; text-transform: uppercase; font-size: 10px; line-height: 1; font-weight: 700; letter-spacing: .13em; }
 .rail-label { padding: 0 9px 10px; }
+.project-list { min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 4px; scrollbar-width: thin; scrollbar-color: #343b42 transparent; }
 .project-item { width: 100%; border: 1px solid transparent; border-radius: 10px; padding: 9px; display: flex; gap: 9px; align-items: center; text-align: left; color: var(--muted); background: transparent; cursor: pointer; }
 .project-item--active { color: var(--text); background: #171b20; border-color: #272e35; box-shadow: 0 1px 0 rgba(255,255,255,.025) inset; }
 .project-item__icon { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; color: var(--green); border-radius: 8px; background: var(--green-wash); }
@@ -61,12 +62,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .worktree-rail { position: sticky; top: 0; height: 100vh; padding: 18px 0; background: var(--panel); overflow: hidden; display: flex; flex-direction: column; }
 .worktree-rail__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px 14px; }
 .worktree-rail__title { min-width: 0; display: flex; align-items: center; gap: 6px; }
-.worktree-rail__header h1 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 20px; line-height: 1; letter-spacing: -.035em; }
+.worktree-rail__header h1 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 17px; line-height: 1; letter-spacing: -.03em; }
 .worktree-rail__controls { display: flex; align-items: center; gap: 2px; }
 .worktree-list { min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #343b42 transparent; }
-.worktree-item { width: 100%; padding: 10px 15px; display: flex; gap: 0; align-items: flex-start; border: 0; border-top: 1px solid transparent; border-bottom: 1px solid transparent; border-radius: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
+.worktree-item { position: relative; width: 100%; padding: 10px 15px; display: flex; gap: 0; align-items: flex-start; border: 0; border-top: 1px solid transparent; border-bottom: 1px solid transparent; border-radius: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
 .worktree-item:hover { background: #15191e; color: var(--text); }
-.worktree-item--active { color: var(--text); border-color: #2b333a; background: #1a1f24; box-shadow: 3px 0 0 var(--green) inset; }
+.worktree-item--active { color: var(--text); border-color: #2b333a; background: #1a1f24; }
+.worktree-item--active::before { content: ""; position: absolute; z-index: 1; top: -1px; bottom: -1px; left: 0; width: 3px; background: var(--green); }
 .worktree-item__collapsed-mark { display: none; }
 .worktree-item__copy { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .worktree-item__copy > span { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -85,7 +87,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .workspace-rail-controls { position: absolute; z-index: 4; top: 14px; left: 14px; display: flex; gap: 4px; }
 .app-shell--worktree-collapsed .workspace__inner { padding-top: 68px; }
 .workspace__inner { width: min(1180px, 100%); margin: 0 auto; padding: 24px 30px 56px; }
-.workspace-header { min-height: 82px; }
+.workspace-header { min-height: 60px; }
 .workspace-header__identity { min-width: 0; display: grid; justify-items: start; gap: 5px; }
 .workspace-project { color: #78817c; font-size: 9px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
 .workspace-title { min-width: 0; display: flex; align-items: center; gap: 9px; }
@@ -222,7 +224,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
   .worktree-rail__header { display: none; }
   .worktree-list { display: block; overflow-y: visible; }
   .worktree-item { width: 100%; padding: 14px 18px; align-items: center; }
-  .worktree-item--active { box-shadow: none; }
   .worktree-item__copy { gap: 4px; }
   .workspace { min-height: 100vh; min-height: 100dvh; }
   .workspace-rail-controls { display: none; }
@@ -231,7 +232,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 
 @media (max-width: 620px) {
   .workspace__inner { padding: 21px 14px 55px; }
-  .workspace-header { min-height: 78px; }
+  .workspace-header { min-height: 60px; }
   .server-card { gap: 7px; padding: 8px; }
   .server-icon { width: 29px; height: 29px; }
   .server-card__actions { gap: 2px; }

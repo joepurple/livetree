@@ -27,12 +27,13 @@ test("blank invocation prints usage and commands needing a repo fail clearly out
 
 test("ls is wired and removed commands become unknown script names", (t) => {
   const repo = createGitRepo(t, "cli-repo");
+  const env = { ...process.env, LIVETREE_HOME: tempDir("cli-home", t) };
   writeFileSync(path.join(repo, ".ltconf"), "dev:\n  web: node server.mjs\n");
-  const list = spawnSync(process.execPath, [cliPath, "ls"], { cwd: repo, encoding: "utf8" });
+  const list = spawnSync(process.execPath, [cliPath, "ls"], { cwd: repo, env, encoding: "utf8" });
   assert.equal(list.status, 0);
   assert.match(list.stdout, /main \[main\]/);
   for (const command of ["use", "cd", "watch", "rm", "__complete"]) {
-    const result = spawnSync(process.execPath, [cliPath, command], { cwd: repo, encoding: "utf8" });
+    const result = spawnSync(process.execPath, [cliPath, command], { cwd: repo, env, encoding: "utf8" });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Unknown command or dev script/);
   }

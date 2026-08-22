@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc && vite build --config dashboard/vite.config.ts",
     "check": "tsc --noEmit && tsc --noEmit -p dashboard/tsconfig.json",
+    "dashboard": "npm run build && node dist/cli.js serve",
     "test": "npm run build && node --test --experimental-test-coverage $(find src -path '*/tests/*.test.mjs' -print)",
     "link": "npm run build && npm link"
   },

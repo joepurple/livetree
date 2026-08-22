@@ -1,0 +1,12 @@
+name: livetree
+
+init:
+  script: npm install
+
+dev:
+  dashboard:
+    cmd: npm run dashboard
+    portArg: -- --port
+
+links:
+  dashboard: ${url:dashboard}

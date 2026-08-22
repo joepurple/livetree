@@ -8,7 +8,7 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
-import type { DashboardState, LogSelection, Script, Worktree } from "./types";
+import type { DashboardState, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "projects" | "worktrees" | "workspace";
 
@@ -55,6 +55,7 @@ function storedWidth(key: string, fallback: number): number {
 export default function App() {
   let dashboardScrollY = 0;
   const [state, setState] = createSignal<DashboardState>();
+  const [selectedProjectId, setSelectedProjectId] = createSignal<string>();
   const [selectedPath, setSelectedPath] = createSignal<string>();
   const [error, setError] = createSignal<string>();
   const [busy, setBusy] = createSignal<string>();
@@ -67,12 +68,19 @@ export default function App() {
   const [terminalWidth, setTerminalWidth] = createSignal(storedWidth("livetree.terminalWidth", 440));
   const [mobileView, setMobileView] = createSignal<MobileView>("projects");
 
-  const selectedWorktree = createMemo(() => {
+  const selectedProject = createMemo(() => {
     const current = state();
-    return current?.worktrees.find((worktree) => worktree.path === selectedPath()) ?? current?.worktrees[0];
+    return current?.projects.find((project) => project.id === selectedProjectId()) ?? current?.projects[0];
   });
-  const filteredWorktrees = createMemo(() => state()?.worktrees ?? []);
-  const runningCount = createMemo(() => state()?.worktrees.flatMap((tree) => tree.scripts).filter((script) => script.running).length ?? 0);
+  const selectedWorktree = createMemo(() => {
+    const project = selectedProject();
+    return project?.worktrees.find((worktree) => worktree.path === selectedPath()) ?? project?.worktrees[0];
+  });
+  const filteredWorktrees = createMemo(() => selectedProject()?.worktrees ?? []);
+
+  function runningCount(project: Project): number {
+    return project.worktrees.flatMap((tree) => tree.scripts).filter((script) => script.running).length;
+  }
 
   async function load(showSpinner = false): Promise<void> {
     if (showSpinner) setRefreshing(true);
@@ -81,8 +89,10 @@ export default function App() {
       const payload = (await response.json()) as DashboardState & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Unable to load livetree");
       setState(payload);
-      if (!selectedPath() || !payload.worktrees.some((tree) => tree.path === selectedPath())) {
-        setSelectedPath(payload.worktrees[0]?.path);
+      const project = payload.projects.find((candidate) => candidate.id === selectedProjectId()) ?? payload.projects[0];
+      setSelectedProjectId(project?.id);
+      if (!selectedPath() || !project?.worktrees.some((tree) => tree.path === selectedPath())) {
+        setSelectedPath(project?.worktrees[0]?.path);
       }
       setError(undefined);
     } catch (caught) {
@@ -92,14 +102,14 @@ export default function App() {
     }
   }
 
-  async function action(kind: string, worktree: Worktree, script: Script): Promise<void> {
-    const key = `${worktree.path}:${script.script}:${kind}`;
+  async function action(kind: string, project: Project, worktree: Worktree, script: Script): Promise<void> {
+    const key = `${project.id}:${worktree.path}:${script.script}:${kind}`;
     setBusy(key);
     try {
       const response = await fetch(apiUrl(kind), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ worktree: worktree.path, script: script.script }),
+        body: JSON.stringify({ project: project.id, worktree: worktree.path, script: script.script }),
       });
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Action failed");
@@ -125,6 +135,15 @@ export default function App() {
     const onPopState = (event: PopStateEvent) => {
       const view = event.state?.livetreeMobileView;
       setMobileView(view === "worktrees" || view === "workspace" ? view : "projects");
+      const terminal = event.state?.livetreeTerminal;
+      if (terminal && typeof terminal.project === "string" && typeof terminal.worktree === "string" && typeof terminal.script === "string") {
+        const project = state()?.projects.find((candidate) => candidate.id === terminal.project);
+        const worktree = project?.worktrees.find((candidate) => candidate.path === terminal.worktree);
+        const script = worktree?.scripts.find((candidate) => candidate.script === terminal.script);
+        if (project && worktree && script) setLogs({ project, worktree, script });
+      } else if (logs()) {
+        closeLogsNow();
+      }
     };
     window.addEventListener("popstate", onPopState);
     onCleanup(() => {
@@ -148,12 +167,34 @@ export default function App() {
     setMobileView(fallback);
   }
 
-  function openLogs(worktree: Worktree, script: Script): void {
+  function selectProject(project: Project): void {
+    setSelectedProjectId(project.id);
+    setSelectedPath(project.worktrees[0]?.path);
+    setLogs(undefined);
+    navigateMobile("worktrees");
+  }
+
+  function openLogs(project: Project, worktree: Worktree, script: Script): void {
     dashboardScrollY = window.scrollY;
-    setLogs({ worktree, script });
+    setLogs({ project, worktree, script });
+    if (window.matchMedia("(max-width: 820px)").matches) {
+      history.pushState({
+        ...history.state,
+        livetreeMobileView: mobileView(),
+        livetreeTerminal: { project: project.id, worktree: worktree.path, script: script.script },
+      }, "");
+    }
   }
 
   function closeLogs(): void {
+    if (history.state?.livetreeTerminal) {
+      history.back();
+      return;
+    }
+    closeLogsNow();
+  }
+
+  function closeLogsNow(): void {
     setLogs(undefined);
     requestAnimationFrame(() => window.scrollTo({ top: dashboardScrollY }));
   }
@@ -237,12 +278,18 @@ export default function App() {
         <div class="rail-label">Projects</div>
         <Show when={state()} fallback={<div class="project-skeleton" />}>
           {(current) => (
-            <button class="project-item project-item--active" type="button" onClick={() => navigateMobile("worktrees")}>
-              <span class="project-item__icon"><FolderGit2 size={18} /></span>
-              <span class="project-item__copy"><strong>{current().project}</strong><small>{current().worktrees.length} worktrees</small></span>
-              <span class="project-item__count">{runningCount()}</span>
-              <ChevronRight size={17} class="mobile-disclosure" />
-            </button>
+            <div class="project-list" aria-label="Projects">
+              <For each={current().projects}>
+                {(project) => (
+                  <button class="project-item" classList={{ "project-item--active": selectedProject()?.id === project.id }} type="button" title={project.path} onClick={() => selectProject(project)}>
+                    <span class="project-item__icon"><FolderGit2 size={18} /></span>
+                    <span class="project-item__copy"><strong>{project.name}</strong><small>{project.worktrees.length} worktrees</small></span>
+                    <span class="project-item__count">{runningCount(project)}</span>
+                    <ChevronRight size={17} class="mobile-disclosure" />
+                  </button>
+                )}
+              </For>
+            </div>
           )}
         </Show>
         <div class="project-rail__footer"><span class="pulse-dot" />Local daemon</div>
@@ -252,14 +299,14 @@ export default function App() {
       <aside class="worktree-rail">
         <div class="mobile-stack-header">
           <Button size="sm" variant="ghost" class="mobile-back" aria-label="Back to projects" onClick={() => backMobile("projects")}><ChevronLeft size={18} /><span>Projects</span></Button>
-          <strong>{state()?.project ?? "Worktrees"}</strong>
+          <strong>{selectedProject()?.name ?? "Worktrees"}</strong>
           <Button size="icon" variant="ghost" aria-label="Refresh dashboard" onClick={() => void load(true)}><RefreshCw size={16} classList={{ spin: refreshing() }} /></Button>
         </div>
         <div class="mobile-screen-heading">Worktrees</div>
         <header class="worktree-rail__header">
           <div class="worktree-rail__title">
             <Show when={projectCollapsed()}><Button size="icon" variant="ghost" class="rail-expand" aria-label="Expand projects sidebar" onClick={() => toggleRail("project")}><PanelLeftOpen size={16} /></Button></Show>
-            <h1>{state()?.project ?? "Loading"}</h1>
+            <h1>{selectedProject()?.name ?? "Loading"}</h1>
           </div>
           <div class="worktree-rail__controls">
             <Button size="icon" variant="ghost" class="refresh-button" aria-label="Refresh dashboard" onClick={() => void load(true)}>
@@ -294,7 +341,7 @@ export default function App() {
       <main class="workspace">
         <div class="mobile-stack-header">
           <Button size="sm" variant="ghost" class="mobile-back" aria-label="Back to worktrees" onClick={() => backMobile("worktrees")}><ChevronLeft size={18} /><span>Worktrees</span></Button>
-          <strong>{state()?.project ?? "livetree"}</strong>
+          <strong>{selectedProject()?.name ?? "livetree"}</strong>
           <span class="mobile-stack-header__spacer" />
         </div>
         <Show when={worktreeCollapsed() || (projectCollapsed() && worktreeCollapsed())}>
@@ -304,8 +351,21 @@ export default function App() {
           </div>
         </Show>
         <Show when={error()}>{(message) => <div class="error-banner" role="alert"><strong>Something went wrong</strong><span>{message()}</span><Button size="sm" onClick={() => void load(true)}>Try again</Button></div>}</Show>
-        <Show when={selectedWorktree()} fallback={<LoadingState />}>
-          {(worktree) => <WorktreeView projectName={state()?.project ?? ""} worktree={worktree()} busy={busy()} onAction={action} onLogs={(script) => openLogs(worktree(), script)} />}
+        <Show when={selectedProject()} fallback={<LoadingState />}>
+          {(project) => (
+            <Show when={selectedWorktree()} fallback={<LoadingState />}>
+              {(worktree) => (
+                <WorktreeView
+                  projectId={project().id}
+                  projectName={project().name}
+                  worktree={worktree()}
+                  busy={busy()}
+                  onAction={(kind, targetWorktree, script) => action(kind, project(), targetWorktree, script)}
+                  onLogs={(script) => openLogs(project(), worktree(), script)}
+                />
+              )}
+            </Show>
+          )}
         </Show>
       </main>
       <Show when={logs()}>{(selection) => <TerminalPage selection={selection()} onClose={closeLogs} onResizeStart={beginTerminalResize} width={terminalWidth()} />}</Show>
@@ -318,6 +378,7 @@ function LoadingState() {
 }
 
 function WorktreeView(props: {
+  projectId: string;
   projectName: string;
   worktree: Worktree;
   busy?: string;
@@ -326,7 +387,7 @@ function WorktreeView(props: {
 }) {
   const [copiedPath, setCopiedPath] = createSignal<string>();
   let copiedTimer: number | undefined;
-  const isBusy = (kind: string, script: Script) => props.busy === `${props.worktree.path}:${script.script}:${kind}`;
+  const isBusy = (kind: string, script: Script) => props.busy === `${props.projectId}:${props.worktree.path}:${script.script}:${kind}`;
 
   async function copyPath(): Promise<void> {
     try {
@@ -395,7 +456,7 @@ function WorktreeView(props: {
                     </Button>
                   </Show>
                 </div>
-                <button type="button" class="server-card__logs" disabled={!script.running || !script.logPath} aria-label={script.running && script.logPath ? `Open ${script.script} logs in side pane` : `${script.script} logs unavailable`} title={script.running && script.logPath ? "Open logs" : "Logs unavailable"} onClick={() => props.onLogs(script)}><TerminalIcon size={15} /><ChevronRight size={14} /></button>
+                <button type="button" class="server-card__logs" disabled={!script.running || !script.logPath} aria-label={script.running && script.logPath ? `Open ${script.script} logs in side pane` : `${script.script} logs unavailable`} title={script.running && script.logPath ? "Open logs" : "Logs unavailable"} onClick={() => props.onLogs(script)}><TerminalIcon size={15} /></button>
               </Card>
             )}
           </For>
