@@ -1,11 +1,12 @@
 use serde::Serialize;
-use std::sync::Mutex;
+use std::{fs, sync::Mutex};
+use tauri::Manager;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_opener::OpenerExt;
 #[cfg(desktop)]
 use std::{env, process::Command};
 #[cfg(desktop)]
-use tauri::{Manager, RunEvent};
+use tauri::RunEvent;
 
 #[cfg(desktop)]
 use tauri_plugin_shell::{
@@ -44,6 +45,54 @@ impl Default for AppState {
 #[tauri::command]
 fn native_info(state: tauri::State<'_, AppState>) -> NativeInfo {
   state.info.lock().expect("native info lock poisoned").clone()
+}
+
+fn desktop_url_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+  app.path().app_data_dir().map(|directory| directory.join("desktop-url")).map_err(|error| error.to_string())
+}
+
+fn allowed_desktop_url(url: &str) -> bool {
+  if url.chars().any(char::is_whitespace) {
+    return false;
+  }
+  if let Some(host) = url.strip_prefix("https://") {
+    return !host.is_empty();
+  }
+  ["http://localhost", "http://127.0.0.1", "http://[::1]"].iter().any(|origin| {
+    url.strip_prefix(origin).is_some_and(|rest| rest.is_empty() || rest.starts_with(':') || rest.starts_with('/'))
+  })
+}
+
+#[tauri::command]
+fn read_desktop_url(app: tauri::AppHandle) -> Result<Option<String>, String> {
+  let path = desktop_url_file(&app)?;
+  match fs::read_to_string(path) {
+    Ok(url) => Ok(Some(url)),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+    Err(error) => Err(error.to_string()),
+  }
+}
+
+#[tauri::command]
+fn write_desktop_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+  if !allowed_desktop_url(&url) {
+    return Err("Only HTTPS or local development URLs can be saved.".into());
+  }
+  let path = desktop_url_file(&app)?;
+  let directory = path.parent().ok_or_else(|| "Could not resolve app data directory.".to_string())?;
+  fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+  let temporary = path.with_extension("tmp");
+  fs::write(&temporary, url).map_err(|error| error.to_string())?;
+  fs::rename(temporary, path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn clear_desktop_url(app: tauri::AppHandle) -> Result<(), String> {
+  match fs::remove_file(desktop_url_file(&app)?) {
+    Ok(()) => Ok(()),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    Err(error) => Err(error.to_string()),
+  }
 }
 
 fn allowed_external_url(url: &str) -> bool {
@@ -221,7 +270,7 @@ pub fn run() {
   let builder = builder.plugin(tauri_plugin_shell::init());
 
   let app = builder
-    .invoke_handler(tauri::generate_handler![native_info, open_external_url])
+    .invoke_handler(tauri::generate_handler![native_info, read_desktop_url, write_desktop_url, clear_desktop_url, open_external_url])
     .setup(|_app| {
       #[cfg(desktop)]
       if let Err(error) = start_livetree(_app.handle()) {
@@ -246,7 +295,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-  use super::allowed_external_url;
+  use super::{allowed_desktop_url, allowed_external_url};
 
   #[test]
   fn allows_web_and_app_deep_links() {
@@ -267,5 +316,15 @@ mod tests {
     ] {
       assert!(!allowed_external_url(url), "unexpectedly allowed {url}");
     }
+  }
+
+  #[test]
+  fn accepts_tailnet_and_local_desktop_urls_only() {
+    assert!(allowed_desktop_url("https://my-mac.example.ts.net"));
+    assert!(allowed_desktop_url("http://localhost:43117"));
+    assert!(allowed_desktop_url("http://127.0.0.1:43117"));
+    assert!(!allowed_desktop_url("http://localhost.example.com"));
+    assert!(!allowed_desktop_url("http://remote.example.com"));
+    assert!(!allowed_desktop_url("https://"));
   }
 }

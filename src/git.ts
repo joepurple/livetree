@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import path from "node:path";
 import { CliError } from "./errors.js";
 import type { WorktreeRecord } from "./types.js";
@@ -13,6 +13,18 @@ export function git(args: string[], cwd: string, errorMessage?: string): string 
   } catch {
     throw new CliError(errorMessage ?? `Git command failed: git ${args.join(" ")}`);
   }
+}
+
+export function gitAsync(args: string[], cwd: string, errorMessage?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { cwd, encoding: "utf8" }, (error, stdout) => {
+      if (error) {
+        reject(new CliError(errorMessage ?? `Git command failed: git ${args.join(" ")}`));
+        return;
+      }
+      resolve(stdout.trimEnd());
+    });
+  });
 }
 
 export function gitCommonDir(root: string): string {

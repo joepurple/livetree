@@ -157,7 +157,21 @@ export function probeAppReachable(name: string, proxy: ProxyInfo = proxyInfo(), 
   });
 }
 
+let proxyStart: Promise<ProxyInfo> | null = null;
+
 export async function ensureProxyRunning(): Promise<ProxyInfo> {
+  if (!proxyStart) {
+    proxyStart = ensureProxyRunningOnce();
+  }
+  const start = proxyStart;
+  try {
+    return await start;
+  } finally {
+    if (proxyStart === start) proxyStart = null;
+  }
+}
+
+async function ensureProxyRunningOnce(): Promise<ProxyInfo> {
   let proxy = proxyInfo();
   if (await isProxyRunning(proxy)) {
     return proxy;

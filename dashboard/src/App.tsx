@@ -8,10 +8,16 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
-import { apiUrl, normalizeDesktopUrl, openExternalUrl, pickProjectFolder, readNativeInfo, runningInTauri, setApiBase, type NativeInfo } from "./native";
+import { apiUrl, clearPersistedDesktopUrl, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "projects" | "worktrees" | "workspace";
+type ActivityToast = {
+  id: string;
+  tone: "loading" | "success" | "error";
+  title: string;
+  message: string;
+};
 
 function age(timestamp: number | null): string {
   if (!timestamp) return "—";
@@ -64,7 +70,8 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = createSignal<string>();
   const [selectedPath, setSelectedPath] = createSignal<string>();
   const [error, setError] = createSignal<string>();
-  const [busy, setBusy] = createSignal<string>();
+  const [busy, setBusy] = createSignal<ReadonlySet<string>>(new Set());
+  const [toasts, setToasts] = createSignal<ActivityToast[]>([]);
   const [logs, setLogs] = createSignal<LogSelection>();
   const [refreshing, setRefreshing] = createSignal(false);
   const [projectCollapsed, setProjectCollapsed] = createSignal(storedBoolean("livetree.projectRailCollapsed"));
@@ -81,7 +88,7 @@ export default function App() {
   const [projectToRemove, setProjectToRemove] = createSignal<Project>();
   const [projectRemoveError, setProjectRemoveError] = createSignal<string>();
   const [worktreeToRemove, setWorktreeToRemove] = createSignal<{ project: Project; worktree: Worktree }>();
-  const [worktreeRemoveError, setWorktreeRemoveError] = createSignal<string>();
+  const toastTimers = new Map<string, number>();
 
   const selectedProject = createMemo(() => {
     const current = state();
@@ -95,6 +102,41 @@ export default function App() {
 
   function runningCount(project: Project): number {
     return project.worktrees.flatMap((tree) => tree.scripts).filter((script) => script.running).length;
+  }
+
+  function beginBusy(key: string): void {
+    setBusy((current) => new Set(current).add(key));
+  }
+
+  function endBusy(key: string): void {
+    setBusy((current) => {
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+  }
+
+  function isBusy(key: string): boolean {
+    return busy().has(key);
+  }
+
+  function showToast(toast: ActivityToast): void {
+    const timer = toastTimers.get(toast.id);
+    if (timer) window.clearTimeout(timer);
+    toastTimers.delete(toast.id);
+    setToasts((current) => [...current.filter((candidate) => candidate.id !== toast.id), toast]);
+  }
+
+  function dismissToast(id: string): void {
+    const timer = toastTimers.get(id);
+    if (timer) window.clearTimeout(timer);
+    toastTimers.delete(id);
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }
+
+  function dismissToastLater(id: string): void {
+    const timer = window.setTimeout(() => dismissToast(id), 3_000);
+    toastTimers.set(id, timer);
   }
 
   async function load(showSpinner = false): Promise<void> {
@@ -127,6 +169,7 @@ export default function App() {
   function connectToDesktop(value: string): void {
     const normalized = normalizeDesktopUrl(value);
     window.localStorage.setItem("livetree.desktopUrl", normalized);
+    if (runningInTauri()) void persistDesktopUrl(normalized).catch((caught) => console.error("Unable to save desktop URL", caught));
     setApiBase(normalized);
     setState(undefined);
     setError(undefined);
@@ -136,6 +179,7 @@ export default function App() {
 
   function changeDesktop(): void {
     window.localStorage.removeItem("livetree.desktopUrl");
+    if (runningInTauri()) void clearPersistedDesktopUrl().catch((caught) => console.error("Unable to clear desktop URL", caught));
     setApiBase(undefined);
     setState(undefined);
     setError(undefined);
@@ -145,8 +189,9 @@ export default function App() {
   }
 
   async function action(kind: string, project: Project, worktree: Worktree, script: Script): Promise<void> {
+    if (isBusy(`worktree:remove:${worktree.path}`)) return;
     const key = `${project.id}:${worktree.path}:${script.script}:${kind}`;
-    setBusy(key);
+    beginBusy(key);
     try {
       const response = await fetch(apiUrl(kind), {
         method: "POST",
@@ -160,12 +205,13 @@ export default function App() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setBusy(undefined);
+      endBusy(key);
     }
   }
 
   async function saveProject(path: string): Promise<void> {
-    setBusy("project:add");
+    const key = "project:add";
+    beginBusy(key);
     setProjectFormError(undefined);
     try {
       const response = await fetch(apiUrl("projects/add"), {
@@ -185,7 +231,7 @@ export default function App() {
       setProjectFormError(caught instanceof Error ? caught.message : String(caught));
       setProjectDialogOpen(true);
     } finally {
-      setBusy(undefined);
+      endBusy(key);
     }
   }
 
@@ -200,26 +246,29 @@ export default function App() {
       setProjectDialogOpen(true);
       return;
     }
-    setBusy("project:pick");
+    const key = "project:pick";
+    beginBusy(key);
     try {
       const selected = await pickProjectFolder();
-      setBusy(undefined);
+      endBusy(key);
       if (!selected) return;
       setProjectPath(selected);
       await saveProject(selected);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
-      setBusy(undefined);
+      endBusy(key);
     }
   }
 
   function requestProjectRemoval(project: Project): void {
+    if (isBusy(`worktree:remove-project:${project.id}`)) return;
     setProjectRemoveError(undefined);
     setProjectToRemove(project);
   }
 
   async function confirmProjectRemoval(project: Project): Promise<void> {
-    setBusy(`project:remove:${project.id}`);
+    const key = `project:remove:${project.id}`;
+    beginBusy(key);
     setProjectRemoveError(undefined);
     try {
       const response = await fetch(apiUrl("projects/remove"), {
@@ -240,18 +289,32 @@ export default function App() {
     } catch (caught) {
       setProjectRemoveError(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setBusy(undefined);
+      endBusy(key);
     }
   }
 
   function requestWorktreeRemoval(project: Project, worktree: Worktree): void {
-    setWorktreeRemoveError(undefined);
+    if (isBusy(`worktree:remove-project:${project.id}`)) return;
     setWorktreeToRemove({ project, worktree });
   }
 
   async function confirmWorktreeRemoval(project: Project, worktree: Worktree): Promise<void> {
-    setBusy(`worktree:remove:${worktree.path}`);
-    setWorktreeRemoveError(undefined);
+    const key = `worktree:remove:${worktree.path}`;
+    const projectKey = `worktree:remove-project:${project.id}`;
+    const toastId = key;
+    const title = worktreeTitle(worktree);
+    beginBusy(key);
+    beginBusy(projectKey);
+    setWorktreeToRemove(undefined);
+    if (selectedPath() === worktree.path) {
+      setSelectedPath(project.worktrees.find((candidate) => candidate.path !== worktree.path)?.path);
+    }
+    if (logs()?.worktree.path === worktree.path) setLogs(undefined);
+    showToast({ id: toastId, tone: "loading", title: `Removing ${title}`, message: "Deleting the worktree in the background…" });
+    if (window.matchMedia("(max-width: 820px)").matches) {
+      setMobileView("worktrees");
+      history.replaceState({ ...history.state, livetreeMobileView: "worktrees", livetreeTerminal: undefined }, "");
+    }
     try {
       const response = await fetch(apiUrl("worktrees/remove"), {
         method: "POST",
@@ -260,19 +323,16 @@ export default function App() {
       });
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Unable to remove worktree");
-      setWorktreeToRemove(undefined);
-      setSelectedPath(undefined);
-      setLogs(undefined);
       await load();
-      setError(undefined);
-      if (window.matchMedia("(max-width: 820px)").matches) {
-        setMobileView("worktrees");
-        history.replaceState({ ...history.state, livetreeMobileView: "worktrees", livetreeTerminal: undefined }, "");
-      }
+      showToast({ id: toastId, tone: "success", title: `Removed ${title}`, message: "The Git branch was kept." });
+      dismissToastLater(toastId);
     } catch (caught) {
-      setWorktreeRemoveError(caught instanceof Error ? caught.message : String(caught));
+      const message = caught instanceof Error ? caught.message : String(caught);
+      showToast({ id: toastId, tone: "error", title: `Could not remove ${title}`, message });
+      await load();
     } finally {
-      setBusy(undefined);
+      endBusy(key);
+      endBusy(projectKey);
     }
   }
 
@@ -290,7 +350,7 @@ export default function App() {
             startDashboard();
           }
           if (info.platform === "ios" && !appReady()) {
-            const stored = window.localStorage.getItem("livetree.desktopUrl");
+            const stored = await readPersistedDesktopUrl().catch(() => null) ?? window.localStorage.getItem("livetree.desktopUrl");
             if (stored) connectToDesktop(stored);
           }
         } catch (caught) {
@@ -362,6 +422,8 @@ export default function App() {
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerCancel);
+      for (const timer of toastTimers.values()) window.clearTimeout(timer);
+      toastTimers.clear();
     });
   });
 
@@ -491,8 +553,8 @@ export default function App() {
         </div>
         <div class="project-rail__heading">
           <div class="rail-label">Projects</div>
-          <Button size="icon" variant="ghost" class="project-add-button" aria-label="Add project" title="Add project" disabled={Boolean(busy())} onClick={() => void chooseProject()}>
-            {busy() === "project:pick" ? <LoaderCircle class="spin" size={14} /> : <Plus size={15} />}
+          <Button size="icon" variant="ghost" class="project-add-button" aria-label="Add project" title="Add project" disabled={isBusy("project:pick") || isBusy("project:add")} onClick={() => void chooseProject()}>
+            {isBusy("project:pick") ? <LoaderCircle class="spin" size={14} /> : <Plus size={15} />}
           </Button>
         </div>
         <Show when={state()} fallback={<div class="project-skeleton" />}>
@@ -512,10 +574,10 @@ export default function App() {
                       class="project-remove-button"
                       aria-label={`Remove ${project.name} from project list`}
                       title="Remove from list"
-                      disabled={Boolean(busy())}
+                      disabled={isBusy(`project:remove:${project.id}`) || isBusy(`worktree:remove-project:${project.id}`)}
                       onClick={() => requestProjectRemoval(project)}
                     >
-                      {busy() === `project:remove:${project.id}` ? <LoaderCircle class="spin" size={13} /> : <X size={13} />}
+                      {isBusy(`project:remove:${project.id}`) ? <LoaderCircle class="spin" size={13} /> : <X size={13} />}
                     </button>
                   </div>
                 )}
@@ -563,7 +625,7 @@ export default function App() {
           <For each={filteredWorktrees()}>
             {(worktree) => {
               return (
-                <button type="button" class="worktree-item" classList={{ "worktree-item--active": selectedWorktree()?.path === worktree.path }} aria-label={`${worktreeTitle(worktree)}, branch ${branchTitle(worktree)}`} title={worktreeCollapsed() ? worktreeTitle(worktree) : undefined} onClick={() => { setSelectedPath(worktree.path); navigateMobile("workspace"); }}>
+                <button type="button" class="worktree-item" classList={{ "worktree-item--active": selectedWorktree()?.path === worktree.path }} aria-label={`${worktreeTitle(worktree)}, branch ${branchTitle(worktree)}`} title={worktreeCollapsed() ? worktreeTitle(worktree) : undefined} disabled={isBusy(`worktree:remove:${worktree.path}`)} onClick={() => { setSelectedPath(worktree.path); navigateMobile("workspace"); }}>
                   <span class="worktree-item__collapsed-mark">{worktree.isMain ? "M" : <Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show>}</span>
                   <span class="worktree-item__copy">
                     <span><strong>{worktreeTitle(worktree)}</strong><Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show></span>
@@ -599,7 +661,7 @@ export default function App() {
               <span><FolderGit2 size={24} /></span>
               <h2>Add your first project</h2>
               <p>Choose a Git repository with a .ltconf file to start managing its worktrees.</p>
-              <Button class="empty-projects-state__add" variant="primary" disabled={Boolean(busy())} onClick={() => void chooseProject()}>{busy() === "project:pick" ? <LoaderCircle class="spin" size={14} /> : <Folder size={15} />}Choose project folder</Button>
+              <Button class="empty-projects-state__add" variant="primary" disabled={isBusy("project:pick") || isBusy("project:add")} onClick={() => void chooseProject()}>{isBusy("project:pick") ? <LoaderCircle class="spin" size={14} /> : <Folder size={15} />}Choose project folder</Button>
             </div>
           </Show>
         }>
@@ -623,20 +685,20 @@ export default function App() {
       </main>
       <Show when={logs()}>{(selection) => <TerminalPage selection={selection()} onClose={closeLogs} onResizeStart={beginTerminalResize} width={terminalWidth()} />}</Show>
       <Show when={projectDialogOpen()}>
-        <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy()) setProjectDialogOpen(false); }}>
-          <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="add-project-title" onKeyDown={(event) => { if (event.key === "Escape" && !busy()) setProjectDialogOpen(false); }}>
+        <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isBusy("project:add")) setProjectDialogOpen(false); }}>
+          <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="add-project-title" onKeyDown={(event) => { if (event.key === "Escape" && !isBusy("project:add")) setProjectDialogOpen(false); }}>
             <header class="dialog-card__header">
               <div><h2 id="add-project-title">Add project</h2><p>Enter the absolute path to a Git repository with a .ltconf file.</p></div>
-              <Button size="icon" variant="ghost" aria-label="Close add project dialog" disabled={Boolean(busy())} onClick={() => setProjectDialogOpen(false)}><X size={16} /></Button>
+              <Button size="icon" variant="ghost" aria-label="Close add project dialog" disabled={isBusy("project:add")} onClick={() => setProjectDialogOpen(false)}><X size={16} /></Button>
             </header>
             <form class="project-form" onSubmit={(event) => void addProject(event)}>
               <label for="project-path">Project folder</label>
               <input ref={(input) => queueMicrotask(() => input.focus())} id="project-path" type="text" autocomplete="off" autocapitalize="none" spellcheck={false} placeholder="/Users/you/code/project" value={projectPath()} onInput={(event) => setProjectPath(event.currentTarget.value)} />
               <Show when={projectFormError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
               <div class="dialog-card__actions">
-                <Button type="button" variant="ghost" disabled={Boolean(busy())} onClick={() => setProjectDialogOpen(false)}>Cancel</Button>
-                <Button type="submit" variant="primary" disabled={!projectPath().trim() || Boolean(busy())}>
-                  {busy() === "project:add" ? <LoaderCircle class="spin" size={14} /> : <Plus size={14} />} Add project
+                <Button type="button" variant="ghost" disabled={isBusy("project:add")} onClick={() => setProjectDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" variant="primary" disabled={!projectPath().trim() || isBusy("project:add")}>
+                  {isBusy("project:add") ? <LoaderCircle class="spin" size={14} /> : <Plus size={14} />} Add project
                 </Button>
               </div>
             </form>
@@ -645,19 +707,18 @@ export default function App() {
       </Show>
       <Show when={worktreeToRemove()}>
         {(selection) => (
-          <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy()) setWorktreeToRemove(undefined); }}>
-            <section class="dialog-card remove-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-worktree-title" onKeyDown={(event) => { if (event.key === "Escape" && !busy()) setWorktreeToRemove(undefined); }}>
+          <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setWorktreeToRemove(undefined); }}>
+            <section class="dialog-card remove-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-worktree-title" onKeyDown={(event) => { if (event.key === "Escape") setWorktreeToRemove(undefined); }}>
               <header class="dialog-card__header">
                 <div class="remove-confirmation-dialog__title"><span><TriangleAlert size={18} /></span><div><h2 id="remove-worktree-title">Remove worktree?</h2><p>{worktreeTitle(selection().worktree)}</p></div></div>
-                <Button size="icon" variant="ghost" aria-label="Close remove worktree dialog" disabled={Boolean(busy())} onClick={() => setWorktreeToRemove(undefined)}><X size={16} /></Button>
+                <Button size="icon" variant="ghost" aria-label="Close remove worktree dialog" onClick={() => setWorktreeToRemove(undefined)}><X size={16} /></Button>
               </header>
               <p class="remove-confirmation-dialog__warning">This permanently deletes the worktree folder, including all uncommitted and untracked changes. The Git branch will be kept.</p>
               <code class="remove-confirmation-dialog__path">{selection().worktree.path}</code>
-              <Show when={worktreeRemoveError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
               <div class="dialog-card__actions">
-                <Button type="button" variant="ghost" disabled={Boolean(busy())} onClick={() => setWorktreeToRemove(undefined)}>Cancel</Button>
-                <Button type="button" variant="danger" disabled={Boolean(busy())} onClick={() => void confirmWorktreeRemoval(selection().project, selection().worktree)}>
-                  {busy() === `worktree:remove:${selection().worktree.path}` ? <LoaderCircle class="spin" size={14} /> : <Trash2 size={14} />} Remove worktree
+                <Button type="button" variant="ghost" onClick={() => setWorktreeToRemove(undefined)}>Cancel</Button>
+                <Button type="button" variant="danger" onClick={() => void confirmWorktreeRemoval(selection().project, selection().worktree)}>
+                  <Trash2 size={14} /> Remove worktree
                 </Button>
               </div>
             </section>
@@ -666,25 +727,38 @@ export default function App() {
       </Show>
       <Show when={projectToRemove()}>
         {(project) => (
-          <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy()) setProjectToRemove(undefined); }}>
-            <section class="dialog-card remove-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-project-title" onKeyDown={(event) => { if (event.key === "Escape" && !busy()) setProjectToRemove(undefined); }}>
+          <div class="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isBusy(`project:remove:${project().id}`)) setProjectToRemove(undefined); }}>
+            <section class="dialog-card remove-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-project-title" onKeyDown={(event) => { if (event.key === "Escape" && !isBusy(`project:remove:${project().id}`)) setProjectToRemove(undefined); }}>
               <header class="dialog-card__header">
                 <div class="remove-confirmation-dialog__title"><span><FolderGit2 size={18} /></span><div><h2 id="remove-project-title">Remove project from LiveTree?</h2><p>{project().name}</p></div></div>
-                <Button size="icon" variant="ghost" aria-label="Close remove project dialog" disabled={Boolean(busy())} onClick={() => setProjectToRemove(undefined)}><X size={16} /></Button>
+                <Button size="icon" variant="ghost" aria-label="Close remove project dialog" disabled={isBusy(`project:remove:${project().id}`)} onClick={() => setProjectToRemove(undefined)}><X size={16} /></Button>
               </header>
               <p class="remove-confirmation-dialog__warning">This only removes the saved project entry. The repository folder, its worktrees, and all project files will stay on disk.</p>
               <code class="remove-confirmation-dialog__path">{project().path}</code>
               <Show when={projectRemoveError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
               <div class="dialog-card__actions">
-                <Button type="button" variant="ghost" disabled={Boolean(busy())} onClick={() => setProjectToRemove(undefined)}>Cancel</Button>
-                <Button type="button" variant="danger" disabled={Boolean(busy())} onClick={() => void confirmProjectRemoval(project())}>
-                  {busy() === `project:remove:${project().id}` ? <LoaderCircle class="spin" size={14} /> : <X size={14} />} Remove from list
+                <Button type="button" variant="ghost" disabled={isBusy(`project:remove:${project().id}`)} onClick={() => setProjectToRemove(undefined)}>Cancel</Button>
+                <Button type="button" variant="danger" disabled={isBusy(`project:remove:${project().id}`)} onClick={() => void confirmProjectRemoval(project())}>
+                  {isBusy(`project:remove:${project().id}`) ? <LoaderCircle class="spin" size={14} /> : <X size={14} />} Remove from list
                 </Button>
               </div>
             </section>
           </div>
         )}
       </Show>
+      <div class="toast-stack" aria-live="polite" aria-label="Background activity">
+        <For each={toasts()}>
+          {(toast) => (
+            <div class="activity-toast" classList={{ "activity-toast--success": toast.tone === "success", "activity-toast--error": toast.tone === "error" }} role={toast.tone === "error" ? "alert" : "status"}>
+              <span class="activity-toast__icon">
+                {toast.tone === "loading" ? <LoaderCircle class="spin" size={16} /> : toast.tone === "success" ? <Check size={16} /> : <TriangleAlert size={16} />}
+              </span>
+              <span class="activity-toast__copy"><strong>{toast.title}</strong><small>{toast.message}</small></span>
+              <Show when={toast.tone !== "loading"}><button type="button" aria-label={`Dismiss ${toast.title}`} onClick={() => dismissToast(toast.id)}><X size={14} /></button></Show>
+            </div>
+          )}
+        </For>
+      </div>
     </div>
     </Show>
   );
@@ -731,7 +805,7 @@ function WorktreeView(props: {
   projectName: string;
   worktree: Worktree;
   platform?: NativeInfo["platform"];
-  busy?: string;
+  busy: ReadonlySet<string>;
   onAction: (kind: string, worktree: Worktree, script: Script) => Promise<void>;
   onLogs: (script: Script) => void;
   onRemove: () => void;
@@ -740,7 +814,9 @@ function WorktreeView(props: {
   const [expandedQr, setExpandedQr] = createSignal<string>();
   const [shortcutError, setShortcutError] = createSignal<{ name: string; message: string }>();
   let copiedTimer: number | undefined;
-  const isBusy = (kind: string, script: Script) => props.busy === `${props.projectId}:${props.worktree.path}:${script.script}:${kind}`;
+  const actionKey = (kind: string, script: Script) => `${props.projectId}:${props.worktree.path}:${script.script}:${kind}`;
+  const isBusy = (kind: string, script: Script) => props.busy.has(actionKey(kind, script));
+  const isScriptBusy = (script: Script) => props.busy.has(`worktree:remove:${props.worktree.path}`) || ["dev/start", "dev/stop", "tunnel/start", "tunnel/stop"].some((kind) => isBusy(kind, script));
 
   async function copyPath(): Promise<void> {
     try {
@@ -800,8 +876,8 @@ function WorktreeView(props: {
           </div>
         </div>
         <Show when={!props.worktree.isMain}>
-          <Button class="remove-worktree-button" size="icon" variant="danger" aria-label="Remove worktree" title="Remove worktree" disabled={Boolean(props.busy)} onClick={() => void props.onRemove()}>
-            {props.busy === `worktree:remove:${props.worktree.path}` ? <LoaderCircle class="spin" size={14} /> : <Trash2 size={14} />}
+          <Button class="remove-worktree-button" size="icon" variant="danger" aria-label="Remove worktree" title="Remove worktree" disabled={props.busy.has(`worktree:remove-project:${props.projectId}`)} onClick={() => void props.onRemove()}>
+            {props.busy.has(`worktree:remove:${props.worktree.path}`) ? <LoaderCircle class="spin" size={14} /> : <Trash2 size={14} />}
           </Button>
         </Show>
       </header>
@@ -824,11 +900,11 @@ function WorktreeView(props: {
                   </div>
                 </div>
                 <div class="server-card__actions">
-                  <Button size="icon" variant={script.running ? "danger" : "primary"} aria-label={`${script.running ? "Stop" : "Start"} ${script.script}`} title={script.running ? "Stop" : "Start"} disabled={Boolean(props.busy)} onClick={() => void props.onAction(`dev/${script.running ? "stop" : "start"}`, props.worktree, script)}>
+                  <Button size="icon" variant={script.running ? "danger" : "primary"} aria-label={`${script.running ? "Stop" : "Start"} ${script.script}`} title={script.running ? "Stop" : "Start"} disabled={isScriptBusy(script)} onClick={() => void props.onAction(`dev/${script.running ? "stop" : "start"}`, props.worktree, script)}>
                     {isBusy(`dev/${script.running ? "stop" : "start"}`, script) ? <LoaderCircle class="spin" size={15} /> : script.running ? <Square size={13} /> : <Play size={14} />}
                   </Button>
                   <Show when={script.running}>
-                    <Button size="icon" variant="outline" aria-label={`${script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} for ${script.script}`} title={script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} data-tooltip={script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} disabled={Boolean(props.busy)} onClick={() => void props.onAction(`tunnel/${script.tunnelUrl ? "stop" : "start"}`, props.worktree, script)}>
+                    <Button size="icon" variant="outline" aria-label={`${script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} for ${script.script}`} title={script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} data-tooltip={script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} disabled={isScriptBusy(script)} onClick={() => void props.onAction(`tunnel/${script.tunnelUrl ? "stop" : "start"}`, props.worktree, script)}>
                       {isBusy(`tunnel/${script.tunnelUrl ? "stop" : "start"}`, script) ? <LoaderCircle class="spin" size={15} /> : <RadioTower size={15} />}
                     </Button>
                   </Show>

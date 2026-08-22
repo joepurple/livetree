@@ -32,6 +32,18 @@ export async function openExternalUrl(value: string): Promise<void> {
   await invoke("open_external_url", { url: value });
 }
 
+export async function readPersistedDesktopUrl(): Promise<string | null> {
+  return invoke<string | null>("read_desktop_url");
+}
+
+export async function persistDesktopUrl(value: string): Promise<void> {
+  await invoke("write_desktop_url", { url: value });
+}
+
+export async function clearPersistedDesktopUrl(): Promise<void> {
+  await invoke("clear_desktop_url");
+}
+
 export function setApiBase(value: string | undefined): void {
   apiBase = value ? value.replace(/\/+$/, "") : undefined;
 }

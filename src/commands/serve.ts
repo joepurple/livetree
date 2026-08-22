@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readLtConfig } from "../config.js";
 import { CliError, errorMessage } from "../errors.js";
-import { git } from "../git.js";
+import { gitAsync } from "../git.js";
 import { interpolateTemplate } from "../interpolate.js";
 import { portlessName } from "../naming.js";
 import { ensureProxyRunning, probeAppReachable, proxyInfo, urlForName } from "../portless.js";
@@ -419,7 +419,7 @@ async function handleAction(originalContext: ProjectContext | null, route: strin
 
   if (route === "/api/worktrees/remove") {
     if (worktree.isMain) throw new CliError("The main worktree cannot be removed.");
-    git(
+    await gitAsync(
       ["worktree", "remove", ...(body.force === true ? ["--force"] : []), worktree.path],
       refreshed.mainRoot,
       `Could not remove '${worktree.label}'. Unlock it and try again.`,
