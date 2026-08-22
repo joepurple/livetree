@@ -1,8 +1,10 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { ServerMode } from "../../src/desktop-ui.js";
 
 export type NativeInfo = {
   platform: "macos" | "ios";
+  serverMode: ServerMode;
   serverUrl: string | null;
   tailnetUrl: string | null;
   error: string | null;
