@@ -173,6 +173,8 @@ The outputs are written below `src-tauri/target/release/bundle/`. The current si
 
 The iOS app is a client only. On first launch it asks for the **Tailnet dashboard URL** displayed in the Mac app. Install Tailscale on the iPhone, sign into an authorized account on the same tailnet, then paste that HTTPS URL. The value is kept on-device and can be changed from the project screen.
 
+After validating that URL as a compatible LiveTree server, iOS loads the dashboard HTML, JavaScript, and CSS directly from the connected server. Dashboard assets are served without caching, and an open dashboard reloads automatically when the server's build fingerprint changes. This keeps mobile UI changes in step with the Mac-side LiveTree build without reinstalling the iOS app. The packaged dashboard remains the connection screen and offline fallback; it also remains active when connected to an older server that does not advertise mobile-dashboard support. Remote dashboard pages do not receive access to Tauri's native command bridge.
+
 Initialize the generated Xcode project once, then develop or build it with Tauri:
 
 ```sh
