@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc && vite build --config dashboard/vite.config.ts",
     "check": "tsc --noEmit && tsc --noEmit -p dashboard/tsconfig.json",
-    "dashboard": "npm run build && node dist/cli.js serve",
+    "dashboard": "npm run build && node dist/cli.js server start --foreground",
     "dashboard:dev": "vite --config dashboard/vite.config.ts",
     "tauri": "tauri",
     "tauri:prepare": "npm run build && node scripts/prepare-tauri-sidecar.mjs",

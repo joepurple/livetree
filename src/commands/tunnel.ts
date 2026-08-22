@@ -152,7 +152,7 @@ async function restartDevServerIfEnvChanged(
   if (!server.managed) {
     markTunnelEnvPending(context.stateDir, name);
     throw new ManualRestartRequiredError(
-      `'${scriptName}' is running with a stale environment (its tunnelEnv values changed) and was started outside livetree serve, so it cannot be restarted automatically.\n`
+      `'${scriptName}' is running with a stale environment (its tunnelEnv values changed) and was started outside livetree server start, so it cannot be restarted automatically.\n`
       + `Restart it yourself: press Ctrl-C where 'livetree dev ${scriptName}' is running, then run 'livetree dev ${scriptName}' again.`,
     );
   }

@@ -1,5 +1,6 @@
+import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { createReadStream, statSync } from "node:fs";
+import { chmodSync, createReadStream, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
@@ -11,7 +12,7 @@ import { interpolateTemplate } from "../interpolate.js";
 import { portlessName } from "../naming.js";
 import { ensureProxyRunning, probeAppReachable, proxyInfo, urlForName } from "../portless.js";
 import { stopProcessGroupAndWait } from "../processes.js";
-import { isConfiguredProject, registerProject, registeredProjectPaths, unregisterProject } from "../projects.js";
+import { isConfiguredProject, livetreeHome, registerProject, registeredProjectPaths, unregisterProject } from "../projects.js";
 import { qrSvg, qrTerminal } from "../qr.js";
 import {
   clearTunnelEnvPending,
@@ -21,6 +22,7 @@ import {
   readTunnelEntry,
   removeServerEntry,
   removeTunnelEntry,
+  isProcessAlive,
 } from "../registry.js";
 import { nextTailscaleServePort, readTailscaleInfo, startTailscaleServe, tailscaleUrl, usedTailscaleServePorts, waitForTailscaleServe } from "../tailscale.js";
 import type { LtConfig, ProjectContext, WorktreeChoice } from "../types.js";
@@ -31,6 +33,36 @@ import { ensureTunnelForScript } from "./tunnel.js";
 const DEFAULT_PORT = 43117;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_INITIAL_LOG_BYTES = 256 * 1024;
+const SERVER_START_USAGE = "Usage: livetree server start [--foreground] [--tailscale|--no-tailscale] [--port <number>]";
+const SERVER_STOP_USAGE = "Usage: livetree server stop";
+const BACKGROUND_CHILD_ENV = "LIVETREE_SERVE_BACKGROUND_CHILD";
+
+type BackgroundServeMessage =
+  | { type: "livetree:serve-ready"; localUrl: string; tailnetUrl: string | null; tailnetError: string | null }
+  | { type: "livetree:serve-error"; message: string; exitCode: number };
+
+type BackgroundServeInfo = {
+  version: 1;
+  pid: number;
+  localUrl: string;
+  tailnetUrl: string | null;
+  tailnetError: string | null;
+  startedAtMs: number;
+};
+
+type DashboardTailnetState = {
+  status: "disabled" | "starting" | "ready" | "unavailable";
+  url: string | null;
+  error: string | null;
+};
+
+type DashboardTailnetRuntime = {
+  state: DashboardTailnetState;
+  child: ChildProcess | null;
+  starting: Promise<string> | null;
+  stopping: boolean;
+  onChange: () => void;
+};
 
 type ActionBody = { project?: unknown; worktree?: unknown; script?: unknown; path?: unknown; force?: unknown };
 
@@ -59,15 +91,37 @@ export function resolveServeContext(cwd: string): ProjectContext | null {
   return null;
 }
 
-export async function runServeCommand(context: ProjectContext | null, args: string[]): Promise<void> {
+export async function runServerStartCommand(context: ProjectContext | null, args: string[]): Promise<void> {
   const options = parseServeArgs(args);
+  if (options.background) {
+    if (options.parentPid !== null) {
+      throw new CliError("--background cannot be combined with --parent-pid.");
+    }
+    const childArgs = args.filter((arg) => arg !== "--background");
+    childArgs.push("--foreground");
+    await runServeInBackground(childArgs);
+    return;
+  }
+
   if (context) {
     const config = readLtConfig(context);
     await reconcileManagedProcesses(context, config);
   }
   const basePath = "/";
+  const tailnet: DashboardTailnetRuntime = {
+    state: {
+      status: options.tailscale ? "starting" : "disabled",
+      url: null,
+      error: null,
+    },
+    child: null,
+    starting: null,
+    stopping: false,
+    onChange: () => {},
+  };
+  let dashboardPort: number | null = null;
   const server = createServer((request, response) => {
-    void handleRequest(context, basePath, request, response);
+    void handleRequest(context, basePath, tailnet, dashboardPort, request, response);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -82,36 +136,277 @@ export async function runServeCommand(context: ProjectContext | null, args: stri
   }
 
   const localUrl = `http://127.0.0.1:${address.port}${basePath}`;
+  dashboardPort = address.port;
   console.log(`Dashboard: ${localUrl}`);
 
-  let tailscaleChild: ChildProcess | null = null;
+  const backgroundStartedAtMs = isBackgroundServeChild() ? Date.now() : null;
+  let backgroundReady = false;
+  const persistBackgroundInfo = (): void => {
+    if (backgroundStartedAtMs === null) return;
+    writeBackgroundServeInfo({
+      version: 1,
+      pid: process.pid,
+      localUrl,
+      tailnetUrl: tailnet.state.url,
+      tailnetError: tailnet.state.error,
+      startedAtMs: backgroundStartedAtMs,
+    });
+  };
+  tailnet.onChange = () => {
+    if (!backgroundReady) return;
+    try {
+      persistBackgroundInfo();
+    } catch (error) {
+      console.error(`Could not update the background dashboard record: ${errorMessage(error)}`);
+    }
+  };
+
   try {
     if (options.tailscale) {
-      const tailscale = readTailscaleInfo();
-      const httpsPort = nextTailscaleServePort(usedTailscaleServePorts(tailscale.binPath));
-      const handle = startTailscaleServe(tailscale, address.port, httpsPort);
-      tailscaleChild = handle.child;
-      const tailnetUrl = tailscaleUrl(tailscale, httpsPort);
-      try {
-        await waitForTailscaleServe(handle, tailnetUrl);
-      } catch (error) {
-        if (handle.child.pid) await stopProcessGroupAndWait(handle.child.pid);
-        tailscaleChild = null;
-        throw error;
-      }
-      console.log(`Tailnet dashboard: ${tailnetUrl}`);
-      console.log(qrTerminal(tailnetUrl));
+      const url = await startDashboardTailnet(tailnet, address.port);
+      console.log(`Tailnet dashboard: ${url}`);
+      console.log(qrTerminal(url));
     }
   } catch (error) {
     if (!options.tailscaleOptional) {
       server.close();
       throw error;
     }
-    console.error(`Tailnet dashboard unavailable: ${errorMessage(error)}`);
+    console.error(`Tailnet dashboard unavailable: ${tailnet.state.error ?? errorMessage(error)}`);
   }
 
+  if (backgroundStartedAtMs !== null) {
+    try {
+      backgroundReady = true;
+      persistBackgroundInfo();
+    } catch (error) {
+      if (tailnet.child?.pid) await stopProcessGroupAndWait(tailnet.child.pid);
+      server.close();
+      throw new CliError(`Could not record the background dashboard: ${errorMessage(error)}`);
+    }
+  }
+
+  sendBackgroundServeMessage({ type: "livetree:serve-ready", localUrl, tailnetUrl: tailnet.state.url, tailnetError: tailnet.state.error });
   console.error("Press Ctrl-C to stop.");
-  await waitForShutdown(server, tailscaleChild, options.parentPid);
+  await waitForShutdown(server, tailnet, options.parentPid, () => {
+    if (backgroundStartedAtMs !== null) removeBackgroundServeInfo(process.pid, backgroundStartedAtMs);
+  });
+}
+
+function startDashboardTailnet(runtime: DashboardTailnetRuntime, localPort: number): Promise<string> {
+  if (runtime.state.status === "ready" && runtime.state.url && runtime.child) {
+    return Promise.resolve(runtime.state.url);
+  }
+  if (runtime.starting) return runtime.starting;
+
+  const attempt = openDashboardTailnet(runtime, localPort);
+  runtime.starting = attempt;
+  void attempt.then(
+    () => { if (runtime.starting === attempt) runtime.starting = null; },
+    () => { if (runtime.starting === attempt) runtime.starting = null; },
+  );
+  return attempt;
+}
+
+async function openDashboardTailnet(runtime: DashboardTailnetRuntime, localPort: number): Promise<string> {
+  runtime.state = { status: "starting", url: null, error: null };
+  runtime.onChange();
+  let child: ChildProcess | null = null;
+  try {
+    const tailscale = readTailscaleInfo();
+    const httpsPort = nextTailscaleServePort(usedTailscaleServePorts(tailscale.binPath));
+    const handle = startTailscaleServe(tailscale, localPort, httpsPort);
+    child = handle.child;
+    if (!child.pid) throw new CliError("Failed to start Tailscale Serve for the dashboard.");
+    runtime.child = child;
+    const url = tailscaleUrl(tailscale, httpsPort);
+    child.once("exit", (code, signal) => {
+      if (runtime.child !== child) return;
+      runtime.child = null;
+      if (runtime.stopping) return;
+      const detail = signal ? `signal ${signal}` : `status ${code ?? 1}`;
+      runtime.state = { status: "unavailable", url: null, error: `Tailscale Serve stopped (${detail}).` };
+      runtime.onChange();
+    });
+    await waitForTailscaleServe(handle, url);
+    runtime.state = { status: "ready", url, error: null };
+    runtime.onChange();
+    return url;
+  } catch (error) {
+    if (child?.pid) {
+      runtime.child = null;
+      await stopProcessGroupAndWait(child.pid);
+    }
+    runtime.state = { status: "unavailable", url: null, error: errorMessage(error) };
+    runtime.onChange();
+    throw error;
+  }
+}
+
+export async function runServerStopCommand(args: string[]): Promise<void> {
+  if (args.length > 0) throw new CliError(SERVER_STOP_USAGE);
+
+  const info = readBackgroundServeInfo();
+  if (!info || !(await recordedBackgroundServerIsHealthy(info))) {
+    clearBackgroundServeInfo();
+    throw new CliError("No background LiveTree server is running.");
+  }
+
+  try {
+    process.kill(info.pid, "SIGTERM");
+  } catch (error) {
+    clearBackgroundServeInfo();
+    throw new CliError(`Could not stop the background LiveTree server: ${errorMessage(error)}`);
+  }
+
+  const deadline = Date.now() + 5_000;
+  while (isProcessAlive(info.pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (isProcessAlive(info.pid)) {
+    throw new CliError(`Background LiveTree server ${info.pid} did not stop within 5 seconds.`);
+  }
+
+  removeBackgroundServeInfo(info.pid, info.startedAtMs);
+  console.log(`Stopped background LiveTree server (pid ${info.pid}).`);
+}
+
+export async function reportBackgroundServeError(error: unknown): Promise<boolean> {
+  if (!isBackgroundServeChild() || typeof process.send !== "function") return false;
+  const exitCode = error instanceof CliError ? error.exitCode : 1;
+  await new Promise<void>((resolve) => {
+    process.send!({ type: "livetree:serve-error", message: errorMessage(error), exitCode } satisfies BackgroundServeMessage, () => resolve());
+  });
+  return true;
+}
+
+async function runServeInBackground(args: string[]): Promise<void> {
+  const cliPath = process.argv[1];
+  if (!cliPath) throw new CliError("Could not determine the livetree executable path.");
+
+  const child = spawn(process.execPath, [cliPath, "server", "start", ...args], {
+    cwd: process.cwd(),
+    env: { ...process.env, [BACKGROUND_CHILD_ENV]: "1" },
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  if (!child.pid) throw new CliError("Failed to start the livetree dashboard in the background.");
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (child.connected) child.disconnect();
+      if (error) {
+        reject(error);
+        return;
+      }
+      child.unref();
+      resolve();
+    };
+
+    child.once("error", (error) => finish(new CliError(`Failed to start the livetree dashboard in the background: ${error.message}`)));
+    child.once("exit", (code, signal) => {
+      if (settled) return;
+      const detail = signal ? `signal ${signal}` : `status ${code ?? 1}`;
+      finish(new CliError(`The background dashboard exited before it was ready (${detail}).`));
+    });
+    child.on("message", (value) => {
+      if (!isBackgroundServeMessage(value)) return;
+      if (value.type === "livetree:serve-error") {
+        finish(new CliError(value.message, value.exitCode));
+        return;
+      }
+
+      console.log(`Dashboard: ${value.localUrl}`);
+      if (value.tailnetUrl) console.log(`Tailnet dashboard: ${value.tailnetUrl}`);
+      if (value.tailnetError) console.error(`Tailnet dashboard unavailable: ${value.tailnetError}`);
+      console.error(`Dashboard is running in the background (pid ${child.pid}).`);
+      console.error("Stop it with: livetree server stop");
+      finish();
+    });
+  });
+}
+
+function isBackgroundServeChild(): boolean {
+  return process.env[BACKGROUND_CHILD_ENV] === "1";
+}
+
+function sendBackgroundServeMessage(message: BackgroundServeMessage): void {
+  if (!isBackgroundServeChild() || typeof process.send !== "function") return;
+  process.send(message);
+}
+
+function isBackgroundServeMessage(value: unknown): value is BackgroundServeMessage {
+  if (!value || typeof value !== "object") return false;
+  const type = (value as { type?: unknown }).type;
+  return type === "livetree:serve-ready" || type === "livetree:serve-error";
+}
+
+function writeBackgroundServeInfo(info: BackgroundServeInfo): void {
+  const home = livetreeHome();
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  chmodSync(home, 0o700);
+  const file = path.join(home, "serve.json");
+  const temporary = `${file}.tmp-${process.pid}`;
+  writeFileSync(temporary, `${JSON.stringify(info, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, file);
+  chmodSync(file, 0o600);
+}
+
+function readBackgroundServeInfo(): BackgroundServeInfo | null {
+  try {
+    const value = JSON.parse(readFileSync(backgroundServeInfoPath(), "utf8")) as Partial<BackgroundServeInfo>;
+    if (
+      value.version !== 1
+      || !Number.isInteger(value.pid)
+      || value.pid! <= 0
+      || typeof value.localUrl !== "string"
+      || (value.tailnetUrl !== null && typeof value.tailnetUrl !== "string")
+      || (value.tailnetError !== null && typeof value.tailnetError !== "string")
+      || !Number.isFinite(value.startedAtMs)
+    ) return null;
+    return value as BackgroundServeInfo;
+  } catch {
+    return null;
+  }
+}
+
+async function recordedBackgroundServerIsHealthy(info: BackgroundServeInfo): Promise<boolean> {
+  if (!isProcessAlive(info.pid)) return false;
+  try {
+    const url = new URL(info.localUrl);
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port) return false;
+    const response = await fetch(new URL("api/health", url), { signal: AbortSignal.timeout(1_000) });
+    if (!response.ok) return false;
+    const value = await response.json() as { service?: unknown; pid?: unknown };
+    return value.service === "livetree" && value.pid === info.pid;
+  } catch {
+    return false;
+  }
+}
+
+function backgroundServeInfoPath(): string {
+  return path.join(livetreeHome(), "serve.json");
+}
+
+function clearBackgroundServeInfo(): void {
+  try {
+    unlinkSync(backgroundServeInfoPath());
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function removeBackgroundServeInfo(pid: number, startedAtMs: number): void {
+  const file = backgroundServeInfoPath();
+  try {
+    const current = JSON.parse(readFileSync(file, "utf8")) as Partial<BackgroundServeInfo>;
+    if (current.pid === pid && current.startedAtMs === startedAtMs) unlinkSync(file);
+  } catch {
+    // The file may already be gone or have been replaced by a newer instance.
+  }
 }
 
 export async function reconcileManagedProcesses(
@@ -142,42 +437,55 @@ export async function reconcileManagedProcesses(
   }
 }
 
-function parseServeArgs(args: string[]): { tailscale: boolean; tailscaleOptional: boolean; port: number; parentPid: number | null } {
-  let tailscale = false;
-  let tailscaleOptional = false;
+function parseServeArgs(args: string[]): { background: boolean; tailscale: boolean; tailscaleOptional: boolean; noTailscale: boolean; port: number; parentPid: number | null } {
+  let background = true;
+  let tailscale = true;
+  let tailscaleOptional = true;
+  let noTailscale = false;
   let port = DEFAULT_PORT;
   let parentPid: number | null = null;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--tailscale") {
+    if (arg === "--background") {
+      background = true;
+    } else if (arg === "--foreground") {
+      background = false;
+    } else if (arg === "--tailscale") {
       tailscale = true;
+      tailscaleOptional = false;
     } else if (arg === "--tailscale-optional") {
       tailscale = true;
       tailscaleOptional = true;
+    } else if (arg === "--no-tailscale") {
+      tailscale = false;
+      tailscaleOptional = false;
+      noTailscale = true;
     } else if (arg === "--port") {
       const value = Number.parseInt(args[index + 1] ?? "", 10);
       if (!Number.isInteger(value) || value < 0 || value > 65535) {
-        throw new CliError("Usage: livetree serve [--tailscale|--tailscale-optional] [--port <number>]");
+        throw new CliError(SERVER_START_USAGE);
       }
       port = value;
       index += 1;
     } else if (arg === "--parent-pid") {
       const value = Number.parseInt(args[index + 1] ?? "", 10);
       if (!Number.isInteger(value) || value <= 0) {
-        throw new CliError("Usage: livetree serve [--tailscale|--tailscale-optional] [--port <number>]");
+        throw new CliError(SERVER_START_USAGE);
       }
       parentPid = value;
       index += 1;
     } else {
-      throw new CliError("Usage: livetree serve [--tailscale|--tailscale-optional] [--port <number>]");
+      throw new CliError(SERVER_START_USAGE);
     }
   }
-  return { tailscale, tailscaleOptional, port, parentPid };
+  return { background, tailscale, tailscaleOptional, noTailscale, port, parentPid };
 }
 
 async function handleRequest(
   originalContext: ProjectContext | null,
   basePath: string,
+  tailnet: DashboardTailnetRuntime,
+  dashboardPort: number | null,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
@@ -205,9 +513,15 @@ async function handleRequest(
     } else if (request.method === "GET" && route.startsWith("/assets/")) {
       sendDashboardAsset(response, route.slice(1));
     } else if (request.method === "GET" && route === "/api/state") {
-      sendJson(response, 200, await dashboardState(originalContext));
+      sendJson(response, 200, await dashboardState(originalContext, tailnet.state));
+    } else if (request.method === "GET" && route === "/api/health") {
+      sendJson(response, 200, { ok: true, service: "livetree", pid: process.pid });
     } else if (request.method === "GET" && route === "/api/logs") {
       streamServerLogs(originalContext, requestUrl, request, response);
+    } else if (request.method === "POST" && route === "/api/tailnet/start") {
+      if (dashboardPort === null) throw new CliError("The dashboard is not ready to start Tailscale Serve.");
+      await startDashboardTailnet(tailnet, dashboardPort);
+      sendJson(response, 200, { ok: true, tailnet: tailnet.state });
     } else if (request.method === "POST" && route.startsWith("/api/")) {
       const result = await handleAction(originalContext, route, await readJsonBody(request));
       sendJson(response, 200, { ok: true, ...result });
@@ -293,9 +607,9 @@ function streamServerLogs(
   request.once("close", () => clearInterval(timer));
 }
 
-async function dashboardState(originalContext: ProjectContext | null): Promise<object> {
+async function dashboardState(originalContext: ProjectContext | null, tailnet: DashboardTailnetState): Promise<object> {
   const projects = await Promise.all(dashboardProjects(originalContext).map(dashboardProjectState));
-  return { generatedAtMs: Date.now(), projects };
+  return { generatedAtMs: Date.now(), tailnet, projects };
 }
 
 async function dashboardProjectState(project: DashboardProject): Promise<object> {
@@ -536,7 +850,12 @@ function sendDashboardAsset(response: ServerResponse, relativePath: string): voi
   createReadStream(filePath).pipe(response);
 }
 
-function waitForShutdown(server: ReturnType<typeof createServer>, tailscaleChild: ChildProcess | null, parentPid: number | null = null): Promise<void> {
+function waitForShutdown(
+  server: ReturnType<typeof createServer>,
+  tailnet: DashboardTailnetRuntime,
+  parentPid: number | null = null,
+  onShutdown: () => void = () => {},
+): Promise<void> {
   return new Promise((resolve) => {
     let stopping = false;
     const parentTimer = parentPid === null ? null : setInterval(() => {
@@ -549,11 +868,15 @@ function waitForShutdown(server: ReturnType<typeof createServer>, tailscaleChild
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
+      tailnet.stopping = true;
       if (parentTimer) clearInterval(parentTimer);
-      if (tailscaleChild?.pid) {
-        try { process.kill(-tailscaleChild.pid, "SIGTERM"); } catch { try { process.kill(tailscaleChild.pid, "SIGTERM"); } catch { /* gone */ } }
+      if (tailnet.child?.pid) {
+        try { process.kill(-tailnet.child.pid, "SIGTERM"); } catch { try { process.kill(tailnet.child.pid, "SIGTERM"); } catch { /* gone */ } }
       }
-      server.close(() => resolve());
+      server.close(() => {
+        onShutdown();
+        resolve();
+      });
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);

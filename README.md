@@ -33,7 +33,8 @@ livetree ls
 livetree dev <script> [args...]
 livetree tunnel <script>
 livetree tunnel stop [<script>|all]
-livetree serve [--tailscale] [--port <number>]
+livetree server start [--foreground] [--tailscale] [--no-tailscale] [--port <number>]
+livetree server stop
 ```
 
 A bare configured script name is shorthand for `dev`, so `livetree web` and `livetree dev web` are equivalent.
@@ -137,7 +138,7 @@ With no target, `stop` affects tunnels for the current worktree. `all` affects t
 ## Dashboard
 
 ```sh
-livetree serve
+livetree server start
 ```
 
 The responsive SolidJS dashboard binds to `127.0.0.1` and organizes projects into worktrees, then servers and configured links. It shows server health, Tailscale URLs, and QR codes, and its buttons start and stop managed dev servers and tailnet shares. The desktop layout can add repositories with the native folder picker or remove them from the saved project list after confirmation. Desktop and mobile can remove non-main worktrees after an explicit confirmation that warns that uncommitted and untracked changes will be permanently deleted; locked worktrees are rejected, and the associated branch is preserved. Choose **Logs** on a running server to open the xterm-powered live output pane. Server logs live below each project's `.livetree/state/logs/`, including foreground servers started with `livetree dev`.
@@ -147,16 +148,20 @@ Every configured repository where you run a livetree command is added to `~/.liv
 To open the dashboard on another device:
 
 ```sh
-livetree serve --tailscale
+livetree server start --tailscale
 ```
 
 This exposes the dashboard through Tailscale Serve and prints its tailnet-only URL and a terminal QR code. Open it from a phone running Tailscale and signed into an authorized tailnet account; Tailscale provides the authentication and access policy.
 
 Use `--port <number>` to change the local dashboard port; `--port 0` asks the operating system for a free port.
 
+`livetree server start` runs in the background and attempts to create the iPhone Tailnet link by default. An unavailable or disconnected Tailscale installation is non-fatal, and the dashboard can retry it later. Use `--no-tailscale` for a local-only server, or `--foreground` to keep the server attached to the current terminal. Stop a background server with `livetree server stop`. While that background instance is healthy, opening the macOS app connects to it instead of starting a second bundled server; quitting the app leaves the background instance running.
+
+The dashboard reports the iPhone link as disabled, starting, ready, or unavailable based on live server state. If Tailscale is disconnected or startup fails, use **Retry iPhone link** in the project rail after reconnecting it; the existing LiveTree server stays running.
+
 ## Native macOS and iOS apps
 
-The Tauri macOS app bundles Node.js and the LiveTree server, so opening the app replaces running `livetree serve` in a terminal. It starts the dashboard on an available loopback port—even when no projects have been saved—and tries to publish that dashboard with Tailscale Serve. If Tailscale is unavailable, the local desktop dashboard still starts.
+The Tauri macOS app bundles Node.js and the LiveTree server. When no healthy background instance is available, it starts its bundled dashboard on an available loopback port—even when no projects have been saved—and tries to publish that dashboard with Tailscale Serve. If Tailscale is unavailable, the local desktop dashboard still starts.
 
 Build the Apple Silicon Mac app and DMG:
 

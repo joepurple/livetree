@@ -7,6 +7,7 @@ import { cursorMetadataForPaths } from "./cursor.js";
 import { CliError } from "./errors.js";
 import { git, gitCommonDir, parseWorktreeList } from "./git.js";
 import { firstPositiveNumber, maxPositiveNumber, pathModifiedAtMs } from "./path-utils.js";
+import { t3MetadataForPaths } from "./t3.js";
 import type { CreatedWorktreeChoice, ModifiedWorktreeChoice, ProjectContext, WorktreeChoice, WorktreeRecord } from "./types.js";
 
 type BuildProjectContextOptions = {
@@ -120,15 +121,17 @@ function enrichWorktrees(records: WorktreeRecord[], commonDir: string, cwd: stri
   const codexMetadata = codexMetadataForPaths(worktreePaths);
   const claudeMetadata = claudeMetadataForPaths(worktreePaths);
   const cursorMetadata = cursorMetadataForPaths(worktreePaths);
+  const t3Metadata = t3MetadataForPaths(worktreePaths);
   const commitTimes = worktreeLastCommitTimesByHead(records, commonDir, cwd);
 
   return records.map((record, index) => {
     const codex = codexMetadata.get(record.path);
-    const chats = [
+    const t3Chats = t3Metadata.get(record.path)?.chats ?? [];
+    const chats = (t3Chats.length > 0 ? [...t3Chats] : [
       ...(codex?.chats ?? []),
       ...(claudeMetadata.get(record.path)?.chats ?? []),
       ...(cursorMetadata.get(record.path)?.chats ?? []),
-    ].sort((left, right) => (right.updatedAtMs ?? 0) - (left.updatedAtMs ?? 0));
+    ]).sort((left, right) => (right.updatedAtMs ?? 0) - (left.updatedAtMs ?? 0));
     return enrichWorktree(record, index === 0, {
       chat: chats[0] ?? null,
       chats,

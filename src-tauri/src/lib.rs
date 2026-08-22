@@ -1,10 +1,19 @@
+#[cfg(desktop)]
+use serde::Deserialize;
 use serde::Serialize;
 use std::{fs, sync::Mutex};
 use tauri::Manager;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_opener::OpenerExt;
 #[cfg(desktop)]
-use std::{env, process::Command};
+use std::{
+  env,
+  io::{Read, Write},
+  net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream},
+  path::PathBuf,
+  process::Command,
+  time::Duration,
+};
 #[cfg(desktop)]
 use tauri::RunEvent;
 
@@ -192,7 +201,85 @@ fn command_path() -> String {
 }
 
 #[cfg(desktop)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundServeInfo {
+  pid: u32,
+  local_url: String,
+  tailnet_url: Option<String>,
+  #[serde(default)]
+  tailnet_error: Option<String>,
+}
+
+#[cfg(desktop)]
+fn livetree_home() -> Option<PathBuf> {
+  env::var_os("LIVETREE_HOME")
+    .filter(|value| !value.is_empty())
+    .map(PathBuf::from)
+    .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".livetree")))
+}
+
+#[cfg(desktop)]
+fn local_dashboard_port(url: &str) -> Option<u16> {
+  let port = url.strip_prefix("http://127.0.0.1:")?.split('/').next()?;
+  port.parse().ok()
+}
+
+#[cfg(desktop)]
+fn background_dashboard_is_healthy(url: &str, expected_pid: u32) -> bool {
+  let Some(port) = local_dashboard_port(url) else {
+    return false;
+  };
+  let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+  let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
+    return false;
+  };
+  let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+  let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+  if stream.write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+    return false;
+  }
+
+  let mut response = String::new();
+  if stream.take(64 * 1024).read_to_string(&mut response).is_err() {
+    return false;
+  }
+  let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+    return false;
+  };
+  if !headers.lines().next().is_some_and(|status| status.contains(" 200 ")) {
+    return false;
+  }
+  serde_json::from_str::<serde_json::Value>(body)
+    .ok()
+    .map(|value| {
+      value.get("service").and_then(|service| service.as_str()) == Some("livetree")
+        && value.get("pid").and_then(|pid| pid.as_u64()) == Some(u64::from(expected_pid))
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(desktop)]
+fn existing_background_livetree() -> Option<NativeInfo> {
+  let info: BackgroundServeInfo = serde_json::from_str(&fs::read_to_string(livetree_home()?.join("serve.json")).ok()?).ok()?;
+  if !allowed_desktop_url(&info.local_url) || !background_dashboard_is_healthy(&info.local_url, info.pid) {
+    return None;
+  }
+  Some(NativeInfo {
+    platform: "macos".into(),
+    server_url: Some(info.local_url),
+    tailnet_url: info.tailnet_url.filter(|url| allowed_desktop_url(url)),
+    error: info.tailnet_error,
+  })
+}
+
+#[cfg(desktop)]
 fn start_livetree(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+  if let Some(info) = existing_background_livetree() {
+    app.state::<AppState>().info.lock().expect("native info lock poisoned").clone_from(&info);
+    return Ok(());
+  }
+
   let script = app.path().resource_dir()?.join("livetree/dist/cli.js");
   let script_path = script.to_string_lossy().into_owned();
   let parent_pid = std::process::id().to_string();
@@ -202,7 +289,9 @@ fn start_livetree(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Erro
     .sidecar("livetree-node")?
     .args([
       script_path.as_str(),
-      "serve",
+      "server",
+      "start",
+      "--foreground",
       "--tailscale-optional",
       "--port",
       "0",
@@ -296,6 +385,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
   use super::{allowed_desktop_url, allowed_external_url};
+  #[cfg(desktop)]
+  use super::{background_dashboard_is_healthy, local_dashboard_port};
+  #[cfg(desktop)]
+  use std::{io::{Read, Write}, net::TcpListener, thread};
 
   #[test]
   fn allows_web_and_app_deep_links() {
@@ -326,5 +419,33 @@ mod tests {
     assert!(!allowed_desktop_url("http://localhost.example.com"));
     assert!(!allowed_desktop_url("http://remote.example.com"));
     assert!(!allowed_desktop_url("https://"));
+  }
+
+  #[cfg(desktop)]
+  #[test]
+  fn extracts_only_loopback_dashboard_ports() {
+    assert_eq!(local_dashboard_port("http://127.0.0.1:43117/"), Some(43117));
+    assert_eq!(local_dashboard_port("http://localhost:43117/"), None);
+    assert_eq!(local_dashboard_port("https://example.com/"), None);
+    assert_eq!(local_dashboard_port("http://127.0.0.1:not-a-port/"), None);
+  }
+
+  #[cfg(desktop)]
+  #[test]
+  fn verifies_the_livetree_health_response() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let port = listener.local_addr().expect("test server address").port();
+    let server = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().expect("accept health request");
+      let mut request = [0_u8; 1024];
+      let size = stream.read(&mut request).expect("read health request");
+      assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /api/health "));
+      let body = format!(r#"{{"ok":true,"service":"livetree","pid":{}}}"#, std::process::id());
+      write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
+        .expect("write health response");
+    });
+
+    assert!(background_dashboard_is_healthy(&format!("http://127.0.0.1:{port}/"), std::process::id()));
+    server.join().expect("health test server");
   }
 }

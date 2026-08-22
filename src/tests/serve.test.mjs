@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { reconcileManagedProcesses, resolveServeContext } from "../../dist/commands/serve.js";
@@ -35,9 +36,9 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
     url: "https://second-main-api.localhost:1355", envFingerprint: "test", tunneled: false,
     startedAtMs: Date.now(), managed: true, logPath: secondLogPath,
   }));
-  const child = spawn(process.execPath, [cliPath, "serve", "--port", "0"], {
+  const child = spawn(process.execPath, [cliPath, "server", "start", "--foreground", "--no-tailscale", "--port", "0"], {
     cwd: repo,
-    env: { ...process.env, LIVETREE_HOME: livetreeHome },
+    env: { ...process.env, LIVETREE_HOME: livetreeHome, LIVETREE_TAILSCALE_BIN: path.join(livetreeHome, "missing-tailscale") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   t.after(() => { if (child.exitCode === null) child.kill("SIGTERM"); });
@@ -55,6 +56,7 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   const state = await fetch(`${url}api/state`);
   assert.equal(state.status, 200);
   const json = await state.json();
+  assert.deepEqual(json.tailnet, { status: "disabled", url: null, error: null });
   assert.deepEqual(json.projects.map((project) => project.name), ["demo", "second"]);
   assert.equal(json.projects[0].id, repo);
   assert.equal(json.projects[0].worktrees[0].scripts[0].script, "web");
@@ -65,6 +67,17 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   assert.equal(json.projects[1].id, secondRepo);
   assert.equal(json.projects[1].worktrees[0].scripts[0].script, "api");
   assert.equal(json.projects[1].worktrees[0].scripts[0].running, true);
+
+  const retryTailnet = await fetch(`${url}api/tailnet/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(retryTailnet.status, 400);
+  assert.match((await retryTailnet.json()).error, /not executable/);
+  const unavailableTailnet = await (await fetch(`${url}api/state`)).json();
+  assert.match(unavailableTailnet.tailnet.error, /not executable/);
+  assert.equal(unavailableTailnet.tailnet.status, "unavailable");
 
   const addedRepo = createGitRepo(t, "serve-added");
   writeFileSync(path.join(addedRepo, ".ltconf"), "name: added\n");
@@ -140,7 +153,7 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   await new Promise((resolve) => child.once("exit", resolve));
 
   const outside = tempDir("serve-outside-git", t);
-  const restarted = spawn(process.execPath, [cliPath, "serve", "--port", "0"], {
+  const restarted = spawn(process.execPath, [cliPath, "server", "start", "--foreground", "--no-tailscale", "--port", "0"], {
     cwd: outside,
     env: { ...process.env, LIVETREE_HOME: livetreeHome },
     stdio: ["ignore", "pipe", "pipe"],
@@ -213,7 +226,7 @@ test("serves from outside Git without any saved projects", async (t) => {
     assert.equal(resolveServeContext(outside), null);
   });
 
-  const child = spawn(process.execPath, [cliPath, "serve", "--port", "0"], {
+  const child = spawn(process.execPath, [cliPath, "server", "start", "--foreground", "--no-tailscale", "--port", "0"], {
     cwd: outside,
     env: { ...process.env, LIVETREE_HOME: livetreeHome },
     stdio: ["ignore", "pipe", "pipe"],
@@ -240,6 +253,84 @@ test("serves from outside Git without any saved projects", async (t) => {
   });
   assert.equal(removed.status, 200);
   assert.deepEqual((await (await fetch(`${url}api/state`)).json()).projects, []);
+});
+
+test("starts the dashboard in the background and reports its dynamic URL", async (t) => {
+  const repo = createGitRepo(t, "serve-background");
+  const livetreeHome = tempDir("serve-background-home", t);
+  writeFileSync(path.join(repo, ".ltconf"), "name: background\n");
+
+  const result = spawnSync(process.execPath, [cliPath, "server", "start", "--port", "0"], {
+    cwd: repo,
+    env: { ...process.env, LIVETREE_HOME: livetreeHome, LIVETREE_TAILSCALE_BIN: path.join(livetreeHome, "missing-tailscale") },
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const url = /Dashboard: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(result.stdout)?.[1];
+  const pid = Number.parseInt(/background \(pid (\d+)\)/.exec(result.stderr)?.[1] ?? "", 10);
+  assert.ok(url);
+  assert.ok(Number.isInteger(pid));
+  const infoPath = path.join(livetreeHome, "serve.json");
+  const info = JSON.parse(readFileSync(infoPath, "utf8"));
+  assert.equal(info.pid, pid);
+  assert.equal(info.localUrl, url);
+  assert.equal(info.tailnetUrl, null);
+  assert.match(info.tailnetError, /not executable/);
+  assert.match(result.stderr, /Tailnet dashboard unavailable/);
+  t.after(() => {
+    try { process.kill(pid, "SIGTERM"); } catch {}
+  });
+
+  const state = await fetch(`${url}api/state`);
+  assert.equal(state.status, 200);
+  assert.equal((await state.json()).projects[0].name, "background");
+  assert.equal((await (await fetch(`${url}api/state`)).json()).tailnet.status, "unavailable");
+  const health = await fetch(`${url}api/health`);
+  assert.deepEqual(await health.json(), { ok: true, service: "livetree", pid });
+  const stopped = spawnSync(process.execPath, [cliPath, "server", "stop"], {
+    cwd: repo,
+    env: { ...process.env, LIVETREE_HOME: livetreeHome },
+    encoding: "utf8",
+    timeout: 7_000,
+  });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, new RegExp(`Stopped background LiveTree server \\(pid ${pid}\\)`));
+  await waitForProcessExit(pid);
+  assert.equal(existsSync(infoPath), false);
+});
+
+test("reports background startup failures to the invoking terminal", async (t) => {
+  const repo = createGitRepo(t, "serve-background-failure");
+  const livetreeHome = tempDir("serve-background-failure-home", t);
+  writeFileSync(path.join(repo, ".ltconf"), "name: background-failure\n");
+  const blocker = createServer();
+  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+  t.after(() => blocker.close());
+  const address = blocker.address();
+  assert.ok(address && typeof address !== "string");
+
+  const result = spawnSync(process.execPath, [cliPath, "server", "start", "--port", String(address.port)], {
+    cwd: repo,
+    env: { ...process.env, LIVETREE_HOME: livetreeHome },
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /EADDRINUSE/);
+  assert.equal(existsSync(path.join(livetreeHome, "serve.json")), false);
+});
+
+test("server stop rejects a missing or stale background instance", (t) => {
+  const cwd = tempDir("server-stop-empty", t);
+  const livetreeHome = tempDir("server-stop-empty-home", t);
+  const result = spawnSync(process.execPath, [cliPath, "server", "stop"], {
+    cwd,
+    env: { ...process.env, LIVETREE_HOME: livetreeHome },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No background LiveTree server is running/);
 });
 
 test("prefers the current configured project when resolving serve", async (t) => {
@@ -269,4 +360,16 @@ function waitForOutput(stream, pattern) {
       }
     });
   });
+}
+
+async function waitForProcessExit(pid) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`Process ${pid} did not exit`);
 }

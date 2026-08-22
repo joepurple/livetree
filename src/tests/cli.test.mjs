@@ -7,9 +7,10 @@ import { cliPath, createGitRepo, tempDir } from "./helpers.mjs";
 
 test("help exposes only the revamped command surface", () => {
   const output = execFileSync(process.execPath, [cliPath, "--help"], { encoding: "utf8" });
-  for (const command of ["livetree init", "livetree ls", "livetree dev", "livetree tunnel", "livetree serve"]) {
+  for (const command of ["livetree init", "livetree ls", "livetree dev", "livetree tunnel", "livetree server start", "livetree server stop"]) {
     assert.match(output, new RegExp(command));
   }
+  assert.match(output, /--foreground/);
   for (const removed of [" use ", " cd ", " watch ", " rm ", "install tools", "@<selector>"]) {
     assert.doesNotMatch(output, new RegExp(removed));
   }
@@ -32,7 +33,7 @@ test("ls is wired and removed commands become unknown script names", (t) => {
   const list = spawnSync(process.execPath, [cliPath, "ls"], { cwd: repo, env, encoding: "utf8" });
   assert.equal(list.status, 0);
   assert.match(list.stdout, /main \[main\]/);
-  for (const command of ["use", "cd", "watch", "rm", "__complete"]) {
+  for (const command of ["use", "cd", "watch", "rm", "serve", "__complete"]) {
     const result = spawnSync(process.execPath, [cliPath, command], { cwd: repo, env, encoding: "utf8" });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Unknown command or dev script/);

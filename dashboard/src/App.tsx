@@ -3,7 +3,7 @@ import {
   LoaderCircle, PanelLeftClose, PanelLeftOpen, Play, Plus, RadioTower, RefreshCw,
   MonitorSmartphone, Server, Settings, Square, Terminal as TerminalIcon, Trash2, TreePine, TriangleAlert, Wifi, X,
 } from "lucide-solid";
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -61,13 +61,17 @@ function storedWidth(key: string, fallback: number): number {
   }
 }
 
+function storedString(key: string): string | undefined {
+  try { return window.localStorage.getItem(key) ?? undefined; } catch { return undefined; }
+}
+
 export default function App() {
   let dashboardScrollY = 0;
   let refreshTimer: number | undefined;
   let nativeTimer: number | undefined;
   let dashboardStarted = false;
   const [state, setState] = createSignal<DashboardState>();
-  const [selectedProjectId, setSelectedProjectId] = createSignal<string>();
+  const [selectedProjectId, setSelectedProjectIdSignal] = createSignal<string | undefined>(storedString("livetree.selectedProjectId"));
   const [selectedPath, setSelectedPath] = createSignal<string>();
   const [error, setError] = createSignal<string>();
   const [busy, setBusy] = createSignal<ReadonlySet<string>>(new Set());
@@ -89,6 +93,16 @@ export default function App() {
   const [projectRemoveError, setProjectRemoveError] = createSignal<string>();
   const [worktreeToRemove, setWorktreeToRemove] = createSignal<{ project: Project; worktree: Worktree }>();
   const toastTimers = new Map<string, number>();
+
+  function setSelectedProjectId(value: string | undefined): void {
+    setSelectedProjectIdSignal(value);
+    try {
+      if (value) window.localStorage.setItem("livetree.selectedProjectId", value);
+      else window.localStorage.removeItem("livetree.selectedProjectId");
+    } catch {
+      // Selection persistence is best effort when storage is unavailable.
+    }
+  }
 
   const selectedProject = createMemo(() => {
     const current = state();
@@ -203,6 +217,28 @@ export default function App() {
       await load();
       setError(undefined);
     } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      endBusy(key);
+    }
+  }
+
+  async function startTailnet(): Promise<void> {
+    const key = "tailnet:start";
+    if (isBusy(key)) return;
+    beginBusy(key);
+    try {
+      const response = await fetch(apiUrl("tailnet/start"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Unable to start the iPhone link");
+      await load();
+      setError(undefined);
+    } catch (caught) {
+      await load();
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       endBusy(key);
@@ -590,9 +626,17 @@ export default function App() {
         </Show>
         <div class="project-rail__footer">
           <Show when={nativeInfo()?.platform === "ios"} fallback={
-            <Show when={nativeInfo()?.tailnetUrl} fallback={<span class="tailnet-status" title={nativeInfo()?.error ?? "Starting Tailscale Serve"}><MonitorSmartphone size={13} />{nativeInfo()?.error ? "iPhone link unavailable" : "Starting iPhone link"}</span>}>
-              {(url) => <button type="button" class="tailnet-copy" title={url()} onClick={() => void navigator.clipboard.writeText(url())}><MonitorSmartphone size={13} />Copy iPhone URL</button>}
-            </Show>
+            <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable iPhone link</button>}>
+              <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
+                <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy iPhone URL</button>
+              </Match>
+              <Match when={state()?.tailnet.status === "starting" || isBusy("tailnet:start")}>
+                <span class="tailnet-status" title="Starting Tailscale Serve"><LoaderCircle class="spin" size={13} />Starting iPhone link</span>
+              </Match>
+              <Match when={state()?.tailnet.status === "unavailable"}>
+                <button type="button" class="tailnet-copy" title={state()?.tailnet.error ?? "Tailscale is unavailable"} disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Retry iPhone link</button>
+              </Match>
+            </Switch>
           }>
             <button type="button" class="tailnet-copy" onClick={changeDesktop}><Settings size={13} />Change desktop</button>
           </Show>

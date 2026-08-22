@@ -3,7 +3,7 @@
 import { runDevScript } from "./commands/dev.js";
 import { initWorktree } from "./commands/init.js";
 import { listWorktrees } from "./commands/list.js";
-import { resolveServeContext, runServeCommand } from "./commands/serve.js";
+import { reportBackgroundServeError, resolveServeContext, runServerStartCommand, runServerStopCommand } from "./commands/serve.js";
 import { runTunnelCommand } from "./commands/tunnel.js";
 import { CliError } from "./errors.js";
 import { isConfiguredProject, registerProject } from "./projects.js";
@@ -15,7 +15,8 @@ const usage = `Usage:
   livetree dev <script> [args...]
   livetree tunnel <script>
   livetree tunnel stop [<script>|all]
-  livetree serve [--tailscale|--tailscale-optional] [--port <number>]
+  livetree server start [--foreground] [--tailscale|--no-tailscale] [--port <number>]
+  livetree server stop
   livetree <script> [args...]
 
 Configuration is read from .ltconf in the main worktree.`;
@@ -32,10 +33,18 @@ async function main(): Promise<void> {
   }
 
   const command = args[0]!;
-  if (command === "serve") {
+  if (command === "server") {
+    const action = args[1];
+    if (action === "stop") {
+      await runServerStopCommand(args.slice(2));
+      return;
+    }
+    if (action !== "start") {
+      throw new CliError("Usage: livetree server start [options] | livetree server stop");
+    }
     const context = resolveServeContext(process.cwd());
     if (context && isConfiguredProject(context.mainRoot)) registerProject(context.mainRoot);
-    await runServeCommand(context, args.slice(1));
+    await runServerStartCommand(context, args.slice(2));
     return;
   }
 
@@ -61,12 +70,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
+main().catch(async (error: unknown) => {
+  const reportedToParent = await reportBackgroundServeError(error);
   if (error instanceof CliError) {
-    if (error.message !== "Canceled.") console.error(error.message);
-    process.exit(error.exitCode);
+    if (!reportedToParent && error.message !== "Canceled.") console.error(error.message);
+    process.exitCode = error.exitCode;
+    return;
   }
 
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  if (!reportedToParent) console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
 });
