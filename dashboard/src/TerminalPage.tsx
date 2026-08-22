@@ -2,13 +2,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { ArrowLeft, X } from "lucide-solid";
-import { createSignal, onCleanup, onMount } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { Button } from "./components/ui/button";
 import { apiUrl } from "./native";
+import { terminalTheme, useSystemAppearance } from "./theme";
 import type { LogSelection } from "./types";
 
 export function TerminalPage(props: { selection: LogSelection; onClose: () => void; onResizeStart: (event: PointerEvent) => void; width: number }) {
   let container!: HTMLDivElement;
+  const appearance = useSystemAppearance();
   const [connectionLabel, setConnectionLabel] = createSignal("Connecting");
   const worktreeLabel = () => props.selection.worktree.isMain
     ? "main"
@@ -23,19 +25,10 @@ export function TerminalPage(props: { selection: LogSelection; onClose: () => vo
       fontSize: 12,
       lineHeight: 1.45,
       scrollback: 10_000,
-      theme: {
-        background: "#090b0e",
-        foreground: "#d7ddd9",
-        cursor: "#f1f3f2",
-        selectionBackground: "#4a4f4c",
-        black: "#1d2228",
-        green: "#d7ddd9",
-        brightGreen: "#ffffff",
-        blue: "#75a7f8",
-        brightBlue: "#a8c8ff",
-        yellow: "#e6c86e",
-        red: "#ef7d79",
-      },
+      theme: terminalTheme(appearance()),
+    });
+    createEffect(() => {
+      terminal.options.theme = terminalTheme(appearance());
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
