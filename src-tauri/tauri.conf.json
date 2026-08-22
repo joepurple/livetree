@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist/dashboard",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run tauri:prepare && npm run dashboard:dev",
+    "beforeDevCommand": "npm run tauri:prepare:dev && npm run dashboard:dev",
     "beforeBuildCommand": "npm run tauri:prepare"
   },
   "app": {

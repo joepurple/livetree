@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::sync::Mutex;
 #[cfg(desktop)]
+use std::{env, process::Command};
+#[cfg(desktop)]
 use tauri::{Manager, RunEvent};
 
 #[cfg(desktop)]
@@ -59,12 +61,44 @@ fn update_from_line(app: &tauri::AppHandle, line: &str, is_stderr: bool) {
 }
 
 #[cfg(desktop)]
+fn login_shell_path() -> Option<String> {
+  const MARKER: &str = "__LIVETREE_PATH__";
+  let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+  let output = Command::new(shell)
+    .args(["-ilc", "printf '__LIVETREE_PATH__%s\\n' \"$PATH\""])
+    .output()
+    .ok()?;
+  if !output.status.success() {
+    return None;
+  }
+  String::from_utf8_lossy(&output.stdout)
+    .lines()
+    .find_map(|line| line.strip_prefix(MARKER))
+    .filter(|path| !path.is_empty())
+    .map(str::to_owned)
+}
+
+#[cfg(desktop)]
+fn command_path() -> String {
+  let mut paths = Vec::new();
+  if let Some(path) = login_shell_path() {
+    paths.push(path);
+  }
+  if let Ok(path) = env::var("PATH") {
+    if !path.is_empty() {
+      paths.push(path);
+    }
+  }
+  paths.push("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into());
+  paths.join(":")
+}
+
+#[cfg(desktop)]
 fn start_livetree(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
   let script = app.path().resource_dir()?.join("livetree/dist/cli.js");
   let script_path = script.to_string_lossy().into_owned();
   let parent_pid = std::process::id().to_string();
-  let inherited_path = std::env::var("PATH").unwrap_or_default();
-  let path = format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{inherited_path}");
+  let path = command_path();
   let (mut events, child) = app
     .shell()
     .sidecar("livetree-node")?
