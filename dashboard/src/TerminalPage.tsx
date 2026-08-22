@@ -1,14 +1,13 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Maximize2, Minimize2, X } from "lucide-solid";
+import { ArrowLeft } from "lucide-solid";
 import { createSignal, onCleanup, onMount } from "solid-js";
 import { Button } from "./components/ui/button";
 import type { LogSelection } from "./types";
 
-export function TerminalPane(props: { selection: LogSelection; onClose: () => void }) {
+export function TerminalPage(props: { selection: LogSelection; onClose: () => void }) {
   let container!: HTMLDivElement;
-  const [expanded, setExpanded] = createSignal(false);
   const [connectionLabel, setConnectionLabel] = createSignal("Connecting");
 
   onMount(() => {
@@ -37,7 +36,7 @@ export function TerminalPane(props: { selection: LogSelection; onClose: () => vo
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(container);
-    fit.fit();
+    requestAnimationFrame(() => fit.fit());
     terminal.writeln(`\x1b[2mStreaming ${props.selection.script.script} · ${props.selection.worktree.label}\x1b[0m`);
     terminal.writeln("");
 
@@ -81,21 +80,18 @@ export function TerminalPane(props: { selection: LogSelection; onClose: () => vo
   });
 
   return (
-    <aside class="terminal-pane" classList={{ "terminal-pane--expanded": expanded() }} aria-label="Server logs">
-      <header class="terminal-pane__header">
-        <div class="terminal-pane__identity">
-          <span class="terminal-pane__lights" aria-hidden="true"><i /><i /><i /></span>
+    <main class="terminal-page" aria-label="Server logs">
+      <header class="terminal-page__header">
+        <Button size="sm" variant="ghost" aria-label="Back to dashboard" onClick={props.onClose}>
+          <ArrowLeft size={16} />Back
+        </Button>
+        <div class="terminal-page__identity">
+          <span class="terminal-page__lights" aria-hidden="true"><i /><i /><i /></span>
           <div><strong>{props.selection.script.script}</strong><span>{props.selection.worktree.label}</span></div>
         </div>
-        <div class="terminal-pane__controls">
-          <span class="terminal-pane__live"><i />{connectionLabel()}</span>
-          <Button size="icon" variant="ghost" aria-label={expanded() ? "Restore log pane" : "Expand log pane"} onClick={() => setExpanded(!expanded())}>
-            {expanded() ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-          </Button>
-          <Button size="icon" variant="ghost" aria-label="Close log pane" onClick={props.onClose}><X size={17} /></Button>
-        </div>
+        <span class="terminal-page__live"><i />{connectionLabel()}</span>
       </header>
-      <div class="terminal-pane__body" ref={container} />
-    </aside>
+      <div class="terminal-page__body" ref={container} />
+    </main>
   );
 }

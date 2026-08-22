@@ -7,7 +7,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } fro
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
-import { TerminalPane } from "./TerminalPane";
+import { TerminalPage } from "./TerminalPage";
 import type { DashboardState, LogSelection, Script, Worktree } from "./types";
 
 function age(timestamp: number | null): string {
@@ -29,6 +29,7 @@ function apiUrl(route: string): URL {
 }
 
 export default function App() {
+  let dashboardScrollY = 0;
   const [state, setState] = createSignal<DashboardState>();
   const [selectedPath, setSelectedPath] = createSignal<string>();
   const [query, setQuery] = createSignal("");
@@ -95,8 +96,18 @@ export default function App() {
     onCleanup(() => window.clearInterval(timer));
   });
 
+  function openLogs(worktree: Worktree, script: Script): void {
+    dashboardScrollY = window.scrollY;
+    setLogs({ worktree, script });
+  }
+
+  function closeLogs(): void {
+    setLogs(undefined);
+    requestAnimationFrame(() => window.scrollTo({ top: dashboardScrollY }));
+  }
+
   return (
-    <div class="app-shell">
+    <Show when={logs()} fallback={<div class="app-shell">
       <aside class="project-rail">
         <div class="brand"><span class="brand__mark"><TreePine size={19} /></span><span>livetree</span></div>
         <div class="rail-label">Projects</div>
@@ -146,11 +157,12 @@ export default function App() {
       <main class="workspace">
         <Show when={error()}>{(message) => <div class="error-banner" role="alert"><strong>Something went wrong</strong><span>{message()}</span><Button size="sm" onClick={() => void load(true)}>Try again</Button></div>}</Show>
         <Show when={selectedWorktree()} fallback={<LoadingState />}>
-          {(worktree) => <WorktreeView worktree={worktree()} busy={busy()} onAction={action} onLogs={(script) => setLogs({ worktree: worktree(), script })} totalHealthy={healthyCount()} totalRunning={runningCount()} />}
+          {(worktree) => <WorktreeView worktree={worktree()} busy={busy()} onAction={action} onLogs={(script) => openLogs(worktree(), script)} totalHealthy={healthyCount()} totalRunning={runningCount()} />}
         </Show>
       </main>
-      <Show when={logs()}>{(selection) => <TerminalPane selection={selection()} onClose={() => setLogs(undefined)} />}</Show>
-    </div>
+    </div>}>
+      {(selection) => <TerminalPage selection={selection()} onClose={closeLogs} />}
+    </Show>
   );
 }
 
