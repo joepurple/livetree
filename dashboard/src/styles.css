@@ -26,7 +26,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 
 .app-shell { --project-width: 218px; --worktree-width: 294px; min-height: 100vh; display: grid; grid-template-columns: var(--project-width) var(--worktree-width) minmax(0, 1fr); }
-.app-shell--terminal-open { grid-template-columns: var(--project-width) var(--worktree-width) minmax(280px,1fr) var(--terminal-width); }
+.app-shell--terminal-open { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; grid-template-columns: var(--project-width) var(--worktree-width) minmax(280px,1fr) var(--terminal-width); }
+.app-shell--terminal-open .workspace { min-height: 0; overflow-y: auto; }
 .app-shell--project-collapsed { --project-width: 0px !important; }
 .app-shell--worktree-collapsed { --worktree-width: 0px !important; }
 .project-rail { grid-column: 1; }
@@ -178,10 +179,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .terminal-page__live { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
 .terminal-page__live i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px rgba(255,255,255,.42); }
 .terminal-page__body { min-width: 0; min-height: 0; padding: 12px max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); }
-.terminal-page .xterm { height: 100%; touch-action: pan-y; }
-.terminal-page .xterm-screen { touch-action: pan-y; }
-.terminal-page .xterm-scrollable-element { touch-action: pan-y; }
-.terminal-page .xterm-viewport { overflow-y: scroll !important; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: #343b42 transparent; }
+.terminal-page .xterm { height: 100%; }
+.terminal-page .xterm, .terminal-page .xterm-screen, .terminal-page .xterm-scrollable-element { touch-action: none; }
+.terminal-page .xterm-viewport { overflow: hidden !important; scrollbar-width: none; }
+.terminal-page .xterm-viewport::-webkit-scrollbar { display: none; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes shimmer { to { background-position: -200% 0; } }
@@ -189,6 +190,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 @media (max-width: 1180px) {
   .app-shell--terminal-open { grid-template-columns: var(--project-width) var(--worktree-width) minmax(0,1fr); }
   .terminal-page { position: fixed; z-index: 50; inset: 0; border-left: 0; overflow: hidden; }
+  .terminal-page .xterm, .terminal-page .xterm-screen, .terminal-page .xterm-rows { user-select: text; -webkit-user-select: text; }
   .terminal-page__resizer { display: none; }
   .terminal-page__close--pane { display: none; }
   .terminal-page__close--fullscreen { display: inline-flex; }
