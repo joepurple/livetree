@@ -3,7 +3,7 @@
 import { runDevScript } from "./commands/dev.js";
 import { initWorktree } from "./commands/init.js";
 import { listWorktrees } from "./commands/list.js";
-import { runServeCommand } from "./commands/serve.js";
+import { resolveServeContext, runServeCommand } from "./commands/serve.js";
 import { runTunnelCommand } from "./commands/tunnel.js";
 import { CliError } from "./errors.js";
 import { isConfiguredProject, registerProject } from "./projects.js";
@@ -32,9 +32,11 @@ async function main(): Promise<void> {
   }
 
   const command = args[0]!;
-  const context = ["init", "ls", "serve"].includes(command)
-    ? buildProjectContext(process.cwd())
-    : buildFastProjectContext(process.cwd());
+  const context = command === "serve"
+    ? resolveServeContext(process.cwd())
+    : ["init", "ls"].includes(command)
+      ? buildProjectContext(process.cwd())
+      : buildFastProjectContext(process.cwd());
 
   if (isConfiguredProject(context.mainRoot)) {
     registerProject(context.mainRoot);

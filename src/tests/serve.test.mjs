@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { reconcileManagedProcesses } from "../../dist/commands/serve.js";
+import { reconcileManagedProcesses, resolveServeContext } from "../../dist/commands/serve.js";
 import { registerProject } from "../../dist/projects.js";
 import { readServerEntries, readTunnelEntries, writeServerEntry, writeTunnelEntry } from "../../dist/registry.js";
 import { cliPath, createGitRepo, tempDir, withEnv } from "./helpers.mjs";
@@ -82,8 +82,9 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   child.kill("SIGTERM");
   await new Promise((resolve) => child.once("exit", resolve));
 
+  const outside = tempDir("serve-outside-git", t);
   const restarted = spawn(process.execPath, [cliPath, "serve", "--port", "0"], {
-    cwd: repo,
+    cwd: outside,
     env: { ...process.env, LIVETREE_HOME: livetreeHome },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -126,6 +127,39 @@ test("reconciles managed processes without losing valid dashboard state", async 
   assert.deepEqual(stopped, [process.pid, process.pid]);
   assert.deepEqual(readServerEntries(stateDir).map(({ name }) => name), ["demo-main-manual", "demo-main-web"]);
   assert.deepEqual(readTunnelEntries(stateDir), []);
+});
+
+test("resolves serve from outside Git using the most recently used saved project", async (t) => {
+  const outside = tempDir("serve-outside", t);
+  const stale = tempDir("serve-stale", t);
+  const olderRepo = createGitRepo(t, "serve-older");
+  const newerRepo = createGitRepo(t, "serve-newer");
+  const livetreeHome = tempDir("serve-resolve-home", t);
+  writeFileSync(path.join(olderRepo, ".ltconf"), "name: older\n");
+  writeFileSync(path.join(newerRepo, ".ltconf"), "name: newer\n");
+
+  await withEnv({ LIVETREE_HOME: livetreeHome }, async () => {
+    registerProject(olderRepo, 10);
+    registerProject(newerRepo, 20);
+    registerProject(stale, 30);
+
+    const context = resolveServeContext(outside);
+    assert.equal(context.mainRoot, newerRepo);
+  });
+});
+
+test("prefers the current configured project when resolving serve", async (t) => {
+  const currentRepo = createGitRepo(t, "serve-current");
+  const savedRepo = createGitRepo(t, "serve-saved");
+  const livetreeHome = tempDir("serve-current-home", t);
+  writeFileSync(path.join(currentRepo, ".ltconf"), "name: current\n");
+  writeFileSync(path.join(savedRepo, ".ltconf"), "name: saved\n");
+
+  await withEnv({ LIVETREE_HOME: livetreeHome }, async () => {
+    registerProject(savedRepo, 20);
+    const context = resolveServeContext(currentRepo);
+    assert.equal(context.mainRoot, currentRepo);
+  });
 });
 
 function waitForOutput(stream, pattern) {

@@ -10,7 +10,7 @@ import { interpolateTemplate } from "../interpolate.js";
 import { portlessName } from "../naming.js";
 import { ensureProxyRunning, probeAppReachable, proxyInfo, urlForName } from "../portless.js";
 import { stopProcessGroupAndWait } from "../processes.js";
-import { registeredProjectPaths } from "../projects.js";
+import { isConfiguredProject, registeredProjectPaths } from "../projects.js";
 import { qrSvg, qrTerminal } from "../qr.js";
 import {
   clearTunnelEnvPending,
@@ -38,6 +38,27 @@ type DashboardProject = {
   context: ProjectContext;
   config: LtConfig;
 };
+
+export function resolveServeContext(cwd: string): ProjectContext {
+  const candidates = [cwd, ...registeredProjectPaths()];
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    try {
+      const context = buildProjectContext(candidate);
+      if (seen.has(context.mainRoot)) continue;
+      seen.add(context.mainRoot);
+      if (isConfiguredProject(context.mainRoot)) return context;
+    } catch {
+      // The current directory may be outside Git and saved projects may have
+      // moved or been deleted. Keep looking for the first usable project.
+    }
+  }
+
+  throw new CliError(
+    "No saved livetree projects are available. Run a livetree command inside a Git worktree with a .ltconf first.",
+  );
+}
 
 export async function runServeCommand(context: ProjectContext, args: string[]): Promise<void> {
   const options = parseServeArgs(args);
