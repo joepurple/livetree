@@ -1,5 +1,5 @@
 import {
-  ArrowUpRight, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, FolderGit2, Link2,
+  ArrowUpRight, Check, ChevronLeft, ChevronRight, Copy, Folder, FolderGit2, Link2,
   LoaderCircle, PanelLeftClose, PanelLeftOpen, Play, RadioTower, RefreshCw,
   Server, Square, Terminal as TerminalIcon, TreePine, Wifi,
 } from "lucide-solid";
@@ -324,7 +324,7 @@ export default function App() {
                 <button type="button" class="worktree-item" classList={{ "worktree-item--active": selectedWorktree()?.path === worktree.path }} aria-label={`${worktreeTitle(worktree)}, branch ${branchTitle(worktree)}`} title={worktreeCollapsed() ? worktreeTitle(worktree) : undefined} onClick={() => { setSelectedPath(worktree.path); navigateMobile("workspace"); }}>
                   <span class="worktree-item__collapsed-mark">{worktree.isMain ? "M" : <Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show>}</span>
                   <span class="worktree-item__copy">
-                    <span><Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show><strong>{worktreeTitle(worktree)}</strong></span>
+                    <span><strong>{worktreeTitle(worktree)}</strong><Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show></span>
                     <small class="worktree-item__branch"><b>Branch</b> {branchTitle(worktree)}</small>
                     <small>Updated {age(worktree.modifiedAtMs)} ago</small>
                   </span>
@@ -422,7 +422,7 @@ function WorktreeView(props: {
             <div class="branch-line"><span>Branch</span><code>{branchTitle(props.worktree)}</code></div>
             <Show when={!props.worktree.isMain}>
               <button type="button" class="workspace-path" title={`Copy ${props.worktree.path}`} aria-label={`Copy worktree path ${props.worktree.path}`} onClick={() => void copyPath()}>
-                <span>{shortPath(props.worktree.path)}</span>{copiedPath() === props.worktree.path ? <Check size={13} /> : <Copy size={13} />}
+                <Folder size={12} /><span>{shortPath(props.worktree.path)}</span>{copiedPath() === props.worktree.path ? <Check size={13} /> : <Copy size={13} />}
               </button>
             </Show>
           </div>
@@ -430,7 +430,7 @@ function WorktreeView(props: {
       </header>
 
       <section class="section-block">
-        <div class="section-heading"><h3>Runtime</h3></div>
+        <div class="section-heading"><h3>Dev Servers</h3></div>
         <div class="server-list">
           <For each={props.worktree.scripts} fallback={<EmptyState icon={<Server size={20} />} title="No servers configured" copy="Add a dev script to .ltconf to see it here." />}>
             {(script) => (
@@ -469,10 +469,13 @@ function WorktreeView(props: {
           <For each={props.worktree.links} fallback={<EmptyState icon={<Link2 size={20} />} title="No links configured" copy="Configured links for this worktree will appear here." />}>
             {(link) => (
               <Card class="link-card">
-                <div class="link-card__heading"><strong>{link.name}</strong><Badge tone={link.available ? "success" : "warning"}>{link.available ? "available" : "unavailable"}</Badge></div>
-                <Show when={link.available && link.url} fallback={<span class="link-card__error">{link.error}</span>}>
-                  <a href={link.url!} target="_blank" rel="noreferrer"><span>{link.url}</span><ExternalLink size={14} /></a>
-                </Show>
+                <div class="link-card__heading">
+                  <Show when={link.available && link.url} fallback={<strong>{link.name}</strong>}>
+                    <a href={link.url!} target="_blank" rel="noreferrer" title={link.url!}><span>{link.name}</span><ArrowUpRight size={13} /></a>
+                  </Show>
+                  <Badge tone={link.available ? "success" : "warning"}>{link.available ? "available" : "unavailable"}</Badge>
+                </div>
+                <Show when={!link.available || !link.url}><span class="link-card__error">{link.error}</span></Show>
                 <Show when={link.qr}><details class="qr-details"><summary>Show QR code</summary><img src={`data:image/svg+xml,${encodeURIComponent(link.qr!)}`} alt={`QR code for ${link.name}`} /></details></Show>
               </Card>
             )}
