@@ -25,6 +25,10 @@ test("reads connected Tailscale identity and formats Serve URLs", (t) => {
   const root = tempDir("fake-tailscale", t);
   const bin = path.join(root, "tailscale");
   writeFileSync(bin, `#!/bin/sh
+if [ "$TAILSCALE_BE_CLI" != "1" ]; then
+  printf '%s' 'The Tailscale GUI failed to start: Tailscale.CLIError error 3.'
+  exit 0
+fi
 printf '%s' '{"BackendState":"Running","Self":{"DNSName":"devbox.example.ts.net.","Online":true}}'
 `);
   chmodSync(bin, 0o755);

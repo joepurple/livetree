@@ -55,7 +55,7 @@ export function resolveTailscaleCli(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 export function readTailscaleInfo(binPath = resolveTailscaleCli()): TailscaleInfo {
-  const result = spawnSync(binPath, ["status", "--json"], { encoding: "utf8" });
+  const result = spawnSync(binPath, ["status", "--json"], { encoding: "utf8", env: tailscaleCliEnv() });
   if (result.error || result.status !== 0) {
     throw new CliError(`Could not read Tailscale status: ${result.error?.message ?? (result.stderr.trim() || "unknown error")}`);
   }
@@ -98,7 +98,7 @@ export function tailscaleDnsName(status: TailscaleStatus): string {
 }
 
 export function usedTailscaleServePorts(binPath: string): Set<number> {
-  const result = spawnSync(binPath, ["serve", "status", "--json"], { encoding: "utf8" });
+  const result = spawnSync(binPath, ["serve", "status", "--json"], { encoding: "utf8", env: tailscaleCliEnv() });
   if (result.error || result.status !== 0) return new Set();
   return tailscaleServePortsFromStatus(result.stdout);
 }
@@ -141,6 +141,7 @@ export function startTailscaleServe(
   const child = spawn(info.binPath, tailscaleServeArgs(localPort, httpsPort), {
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
+    env: tailscaleCliEnv(),
   });
   let output = "";
   const onChunk = (chunk: Buffer): void => {
@@ -227,6 +228,13 @@ function isExecutable(file: string): boolean {
   } catch {
     return false;
   }
+}
+
+function tailscaleCliEnv(): NodeJS.ProcessEnv {
+  // The macOS GUI and CLI share one executable. Without an interactive shell,
+  // it can mistake a sidecar invocation for a GUI launch and print a GUI error
+  // to stdout with exit status 0 instead of running the requested CLI command.
+  return { ...process.env, TAILSCALE_BE_CLI: "1" };
 }
 
 function sleep(ms: number): Promise<void> {
