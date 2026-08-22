@@ -9,9 +9,9 @@ import { markWorktreeInitialized, uninitializedWorktreesNewestFirst } from "../w
 
 export async function initWorktree(context: ProjectContext): Promise<void> {
   const config = readLtConfig(context);
-  if (!config.initScript) {
+  if (!config.initScript && config.copyFiles.length === 0) {
     throw new CliError(
-      `.ltconf must define an init script.\n\nSupported examples:\ninit:\n  copy:\n    - modules/api/.env\n  script: pnpm install\n\ninit:\n  script: |\n    corepack enable\n    pnpm install`,
+      `.ltconf must define an init section.\n\nExample:\ninit:\n  copy:\n    - modules/api/.env\n  script: pnpm install`,
     );
   }
 
@@ -27,7 +27,10 @@ export async function initWorktree(context: ProjectContext): Promise<void> {
     console.log(`\nInitializing: ${target.label}`);
     console.log(target.path);
     copyInitFiles(context, target, config.copyFiles);
-    runInitScript(target, config.initScript);
+    if (config.initScript) {
+      runInitScript(target, config.initScript);
+    }
+
     markWorktreeInitialized(target);
     console.log(`Initialized: ${target.label}`);
   }
@@ -77,6 +80,11 @@ function copyInitFiles(context: ProjectContext, target: WorktreeChoice, copyFile
 
     if (!lstatSync(sourcePath).isFile()) {
       throw new CliError(`Init copy path is not a file: ${relativePath}`);
+    }
+
+    if (existsSync(targetPath)) {
+      console.log(`kept ${relativePath} (already exists)`);
+      continue;
     }
 
     mkdirSync(path.dirname(targetPath), { recursive: true });

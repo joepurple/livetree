@@ -2,9 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { commandFailureMessage } from "./errors.js";
 import { stripHeadsPrefix } from "./git.js";
-import type { Chat, WorktreeChoice } from "./types.js";
+import type { Chat } from "./types.js";
 
 export type CodexMetadata = {
   chat: Chat | null;
@@ -17,25 +16,6 @@ type CodexCatalogRow = Chat & {
   cwd: string;
   threadId: string;
 };
-
-export function codexChatForPath(worktreePath: string): Chat | null {
-  return codexMetadataForPaths([worktreePath]).get(worktreePath)?.chat ?? null;
-}
-
-export function threadIdForPath(worktreePath: string): string | null {
-  return readGitdirJsonValue(worktreePath, "codex-thread.json", "ownerThreadId");
-}
-
-export function syncedBranchForPath(worktreePath: string): string | null {
-  const branch = readGitdirJsonValue(worktreePath, "codex-synced-branch.json", "branch");
-  return branch ? stripHeadsPrefix(branch) : null;
-}
-
-export function codexThreadIdForChoice(choice: WorktreeChoice): string | null {
-  return choice.chats.find((chat) => chat.provider === "codex")?.id
-    ?? (choice.chat?.provider === "codex" ? choice.chat.id : null)
-    ?? threadIdForPath(choice.path);
-}
 
 export function codexMetadataForPaths(worktreePaths: string[]): Map<string, CodexMetadata> {
   const metadata = new Map<string, CodexMetadata>();
@@ -90,23 +70,6 @@ function appendCodexChat(metadata: CodexMetadata | undefined, row: CodexCatalogR
   };
   metadata.chats.push(chat);
   metadata.chat ??= chat;
-}
-
-export function archiveRemovedCodexChat(choice: WorktreeChoice, threadId: string | null): void {
-  if (!threadId) {
-    return;
-  }
-
-  try {
-    execFileSync("codex", ["archive", threadId], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const title = choice.chats.find((chat) => chat.provider === "codex" && chat.id === threadId)?.title;
-    console.log(`Archived Codex chat: ${title || threadId}`);
-  } catch (error) {
-    process.stderr.write(`Warning: failed to archive Codex chat ${threadId}: ${commandFailureMessage(error)}\n`);
-  }
 }
 
 function queryCodexCatalogRows(worktreePaths: string[], threadIds: string[]): CodexCatalogRow[] {
@@ -171,15 +134,6 @@ function timestampMs(value: string | undefined): number | undefined {
 
 export function codexCatalogPath(): string {
   return path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"), "sqlite", "codex-dev.db");
-}
-
-function readGitdirJsonValue(worktreePath: string, filename: string, key: string): string | null {
-  const gitdir = gitdirForPath(worktreePath);
-  if (!gitdir) {
-    return null;
-  }
-
-  return readGitdirJsonValueFromGitdir(gitdir, filename, key);
 }
 
 function readGitdirJsonValueFromGitdir(gitdir: string, filename: string, key: string): string | null {

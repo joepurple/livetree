@@ -3,10 +3,11 @@ import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { claudeMetadataForPaths } from "./claude.js";
 import { codexMetadataForPaths } from "./codex.js";
+import { cursorMetadataForPaths } from "./cursor.js";
 import { CliError } from "./errors.js";
 import { git, gitCommonDir, parseWorktreeList } from "./git.js";
 import { firstPositiveNumber, maxPositiveNumber, pathModifiedAtMs } from "./path-utils.js";
-import type { CreatedWorktreeChoice, ModifiedWorktreeChoice, ProjectContext, WorktreeChoice, WorktreeListItem, WorktreeRecord } from "./types.js";
+import type { CreatedWorktreeChoice, ModifiedWorktreeChoice, ProjectContext, WorktreeChoice, WorktreeRecord } from "./types.js";
 
 type BuildProjectContextOptions = {
   loadChoices?: boolean;
@@ -20,7 +21,7 @@ type WorktreeMetadata = {
 };
 
 export function buildProjectContext(cwd: string, options: BuildProjectContextOptions = {}): ProjectContext {
-  const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "lt must be run inside a Git worktree.");
+  const currentRoot = git(["rev-parse", "--show-toplevel"], cwd, "livetree must be run inside a Git worktree.");
   const commonDir = gitCommonDir(currentRoot);
   const records = parseWorktreeList(git(["--git-dir", commonDir, "worktree", "list", "--porcelain"], currentRoot));
   const worktrees = records.filter((record) => !record.bare);
@@ -31,8 +32,6 @@ export function buildProjectContext(cwd: string, options: BuildProjectContextOpt
   }
 
   const liveDir = path.join(mainRoot, ".livetree");
-  const srcLink = path.join(liveDir, "src");
-  const stateFile = path.join(liveDir, ".source");
   const choices = options.loadChoices === false ? [] : enrichWorktrees(worktrees, commonDir, currentRoot);
 
   return {
@@ -41,8 +40,7 @@ export function buildProjectContext(cwd: string, options: BuildProjectContextOpt
     commonDir,
     mainRoot,
     liveDir,
-    srcLink,
-    stateFile,
+    stateDir: path.join(liveDir, "state"),
     choices,
   };
 }
@@ -51,11 +49,24 @@ export function buildFastProjectContext(cwd: string): ProjectContext {
   return buildProjectContext(cwd, { loadChoices: false });
 }
 
-export function worktreeListItemsModifiedNewestFirst(choices: WorktreeChoice[]): WorktreeListItem[] {
-  return worktreesModifiedNewestFirst(choices).map((item) => ({
-    ...item,
-    searchText: worktreeSearchText(item.choice),
-  }));
+export function currentWorktree(context: ProjectContext): WorktreeRecord {
+  const fromChoices = context.choices.find((choice) => choice.path === context.currentRoot);
+  if (fromChoices) {
+    return fromChoices;
+  }
+
+  const head = git(["-C", context.currentRoot, "rev-parse", "HEAD"], context.currentRoot);
+  let branch: string | null = null;
+  try {
+    branch = execFileSync("git", ["-C", context.currentRoot, "symbolic-ref", "--short", "-q", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim() || null;
+  } catch {
+    branch = null;
+  }
+
+  return { path: context.currentRoot, head, branch, bare: false, prunable: null };
 }
 
 export function worktreesModifiedNewestFirst(choices: WorktreeChoice[]): ModifiedWorktreeChoice[] {
@@ -80,11 +91,9 @@ export function isWorktreeInitialized(choice: WorktreeChoice): boolean {
   const liveDir = path.join(choice.path, ".livetree");
   try {
     const stats = lstatSync(liveDir);
-    if (stats.isDirectory()) {
-      return true;
+    if (!stats.isDirectory()) {
+      throw new CliError(`Cannot initialize worktree because .livetree exists and is not a directory: ${liveDir}`);
     }
-
-    throw new CliError(`Cannot initialize worktree because .livetree exists and is not a directory: ${liveDir}`);
   } catch (error) {
     if (error instanceof CliError) {
       throw error;
@@ -92,6 +101,8 @@ export function isWorktreeInitialized(choice: WorktreeChoice): boolean {
 
     return false;
   }
+
+  return existsSync(path.join(liveDir, "initialized"));
 }
 
 export function markWorktreeInitialized(choice: WorktreeChoice): void {
@@ -101,13 +112,14 @@ export function markWorktreeInitialized(choice: WorktreeChoice): void {
   }
 
   mkdirSync(liveDir, { recursive: true });
-  writeFileSync(path.join(liveDir, ".source"), `${choice.path}\n`, "utf8");
+  writeFileSync(path.join(liveDir, "initialized"), `${new Date().toISOString()}\n`, "utf8");
 }
 
 function enrichWorktrees(records: WorktreeRecord[], commonDir: string, cwd: string): WorktreeChoice[] {
   const worktreePaths = records.map((record) => record.path);
   const codexMetadata = codexMetadataForPaths(worktreePaths);
   const claudeMetadata = claudeMetadataForPaths(worktreePaths);
+  const cursorMetadata = cursorMetadataForPaths(worktreePaths);
   const commitTimes = worktreeLastCommitTimesByHead(records, commonDir, cwd);
 
   return records.map((record, index) => {
@@ -115,6 +127,7 @@ function enrichWorktrees(records: WorktreeRecord[], commonDir: string, cwd: stri
     const chats = [
       ...(codex?.chats ?? []),
       ...(claudeMetadata.get(record.path)?.chats ?? []),
+      ...(cursorMetadata.get(record.path)?.chats ?? []),
     ].sort((left, right) => (right.updatedAtMs ?? 0) - (left.updatedAtMs ?? 0));
     return enrichWorktree(record, index === 0, {
       chat: chats[0] ?? null,
@@ -131,11 +144,11 @@ function enrichWorktree(record: WorktreeRecord, isMain: boolean, metadata: Workt
     return {
       ...record,
       isMain,
-      chat: null,
-      chats: [],
+      chat: metadata.chat,
+      chats: metadata.chats,
       ref,
       lastCommitAtMs: metadata.lastCommitAtMs,
-      label: ref ? `ROOT [${ref}]` : "ROOT",
+      label: ref ? `main [${ref}]` : "main",
     };
   }
 
@@ -301,16 +314,4 @@ function worktreeCreatedAtMs(choice: WorktreeChoice): number {
   } catch {
     return Number.NEGATIVE_INFINITY;
   }
-}
-
-function worktreeSearchText(choice: WorktreeChoice): string {
-  return [
-    choice.label,
-    choice.path,
-    path.basename(choice.path),
-    choice.ref,
-    choice.branch,
-    choice.head,
-    ...choice.chats.flatMap((chat) => [chat.title, chat.id, chat.provider]),
-  ].filter((value): value is string => Boolean(value)).join(" ");
 }

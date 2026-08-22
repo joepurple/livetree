@@ -1,14 +1,5 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
-
-export function resolveExistingPath(value: string, cwd: string): string | null {
-  const candidate = path.isAbsolute(value) ? value : path.resolve(cwd, value);
-  if (!existsSync(candidate)) {
-    return null;
-  }
-
-  return normalizePath(candidate);
-}
 
 export function samePath(left: string, right: string): boolean {
   return normalizePath(left) === normalizePath(right);
@@ -19,14 +10,6 @@ export function normalizePath(value: string): string {
     return realpathSync(value);
   } catch {
     return path.resolve(value);
-  }
-}
-
-export function isDanglingSymlink(value: string): boolean {
-  try {
-    return lstatSync(value).isSymbolicLink();
-  } catch {
-    return false;
   }
 }
 

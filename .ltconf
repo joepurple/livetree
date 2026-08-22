@@ -1,5 +1,0 @@
-init:
-  script: npm install
-
-run:
-  dev: npm run build --silent && node dist/cli.js

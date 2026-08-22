@@ -7,9 +7,6 @@ export class CliError extends Error {
   }
 }
 
-export class WorktreeRemoveNeedsForceError extends CliError {}
-export class WorktreeRemovePrunableError extends CliError {}
-
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

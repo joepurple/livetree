@@ -7,7 +7,7 @@ export type WorktreeRecord = {
 };
 
 export type Chat = {
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "cursor";
   id: string;
   title: string;
   updatedAtMs?: number;
@@ -28,40 +28,57 @@ export type ProjectContext = {
   commonDir: string;
   mainRoot: string;
   liveDir: string;
-  srcLink: string;
-  stateFile: string;
-  sourceOverride?: string;
+  stateDir: string;
   choices: WorktreeChoice[];
 };
 
+export type DevScript = {
+  name: string;
+  cmd: string;
+  env: Record<string, string>;
+  tunnelEnv: Record<string, string>;
+  portArg: string | null;
+};
+
 export type LtConfig = {
+  configPath: string;
+  name: string;
   initScript: string | null;
   copyFiles: string[];
-  runScripts: Record<string, string>;
-  configPath: string;
+  devScripts: Record<string, DevScript>;
+  links: Record<string, string>;
 };
 
-export type RunOptions = {
-  scriptName: string | null;
-  scriptArgs: string[];
+export type ServerEntry = {
+  name: string;
+  script: string;
+  worktree: string;
+  pid: number;
+  /** Direct application port behind portless. Optional for older state files. */
+  appPort?: number;
+  url: string;
+  envFingerprint: string;
+  tunneled: boolean;
+  /** Read only for migration from pre-0.2 development builds. */
+  env?: Record<string, string>;
+  startedAtMs: number;
+  managed: boolean;
+  logPath: string | null;
 };
 
-export type RunConfiguredScriptOptions = {
-  shortcut?: boolean;
-};
-
-export type LivetreeSourceSnapshot = {
-  source: string;
-  key: string;
+export type TunnelEntry = {
+  name: string;
+  script: string;
+  worktree: string;
+  pid: number;
+  httpsPort?: number;
+  url: string;
+  startedAtMs: number;
 };
 
 export type ModifiedWorktreeChoice = {
   choice: WorktreeChoice;
   modifiedAtMs: number;
-};
-
-export type WorktreeListItem = ModifiedWorktreeChoice & {
-  searchText: string;
 };
 
 export type CreatedWorktreeChoice = {

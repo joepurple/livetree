@@ -1,128 +1,157 @@
 # livetree
 
-`lt` switches a stable runner symlink for a Git project:
+`livetree` is a parallel-worktree development toolkit. It gives every dev server in every Git worktree a stable HTTPS URL, shares selected services securely over Tailscale, and serves a dashboard for the whole repository.
 
 ```text
-<main-worktree>/.livetree/src -> <selected-worktree>
+https://<project>-<worktree>-<script>.localhost
 ```
 
-Run it from any worktree that belongs to the project.
+For example, the `api` server on branch `fix/login` in project `ecos` becomes `https://ecos-fix-login-api.localhost`. Detached worktrees use a stable hash of their real path, so worktrees created under tools such as Codex do not collide.
+
+## Install
+
+Livetree requires Node.js 20 or newer. Portless is bundled; do not install it separately. Tailnet sharing requires the Tailscale CLI to be installed, connected, and approved for Tailscale Serve.
 
 ```sh
-lt
-lt use [selector]
-lt @<selector>
-lt <script-name> [args...]
-lt ls
-lt cd [selector]
-lt init
-lt run <script-name> [args...]
-lt watch <script-name> [args...]
-lt : <shell-command> [args...]
-lt run: <shell-command> [args...]
-lt watch: <shell-command> [args...]
-lt rm
-lt install tools
+npm install --global livetree
 ```
 
-With no arguments, `lt` opens the fullscreen searchable switcher. Type to fuzzy-filter by label, path, branch, commit hash, chat id, or Codex/Claude chat title; use Up/Down to move, Enter to switch to the highlighted worktree, Esc to clear the search box, and Ctrl-C to exit. The fullscreen switcher updates live when worktrees, Codex or Claude chat metadata, or the active live tree change. To switch directly, use `lt use <selector>` or `lt @<selector>`. Selectors match `root` for the main project worktree, a worktree path, basename, branch name, commit hash prefix, chat id prefix, or Codex/Claude chat title fragment.
-
-Put another `lt` command after `@<selector>` to run that command inside the selected worktree without changing `.livetree/src`:
-
-```sh
-lt @dark-mode-mobile : pwd
-lt @dark-mode-mobile api
-```
-
-Use `lt ls` to print worktrees without selecting or switching the active worktree:
-
-```text
-10m  * Plan push notifications rollout [push-notifs]
-    /Users/avinoam/.codex/worktrees/b3d2/ecosconnect
-1h     ROOT [mobile-dev]
-    /Users/avinoam/code/ecosconnect
-```
-
-Use `lt cd` to select a worktree and copy a ready-to-paste `cd <worktree>` command to the macOS pasteboard. Use `lt cd <selector>` to copy a command directly.
-
-Install zsh tab completion into `~/.zshrc`:
-
-```sh
-lt install tools
-```
-
-Selector completions are available for `lt use`, `lt cd`, and `lt @<selector>`.
-
-Use `lt init` to initialize every worktree that has not been initialized yet. A worktree is considered initialized when `<worktree>/.livetree` exists. For each uninitialized worktree, `lt` copies any configured files from the main worktree, runs the project init script in that worktree, then writes `<worktree>/.livetree/.source` as the initialization marker. Define init behavior in `.ltconf` at the main worktree root:
-
-```yaml
-init:
-  copy:
-    - modules/api/.env
-    - modules/mobile/.env.local
-  script: pnpm install
-```
-
-Copy paths are relative to the main worktree root. Missing copy files are reported and skipped.
-
-Multiline scripts are supported:
-
-```yaml
-init:
-  copy:
-    - modules/api/.env
-  script: |
-    corepack enable
-    pnpm install
-```
-
-The shorthand forms `init: pnpm install`, `initScript: pnpm install`, and `scripts:` with an indented `init:` value are also supported.
-
-Define reusable `lt` commands under `run`:
-
-```yaml
-run:
-  api: cd src/modules/api && pnpm start
-  web: cd src/modules/web && pnpm start
-  mobile: cd src/modules/mobile && pnpm start
-```
-
-Run them once with `lt api` or `lt run api`. Built-in commands take precedence over run script shortcuts. Run scripts start in the active live worktree directory.
-
-Use `lt :` to run an ad hoc shell command from the active live worktree directory:
-
-```sh
-lt : git status
-lt run: git status
-lt : "pwd && git status --short"
-```
-
-Quote the whole command when using shell operators like `&&`, pipes, or redirects.
-
-Use `lt watch:` to run an ad hoc shell command from the active live worktree directory again whenever `.livetree/src` points at a new source. If the command is still running when the live worktree changes, `lt` stops it before starting it in the new source:
-
-```sh
-lt watch: npm test
-lt watch: "pwd && git status --short"
-```
-
-Use `lt watch api` to keep a script tied to the live worktree. `lt` watches `.livetree/src`; when you switch the active worktree, it stops the current process tree and starts the script again against the new target:
-
-```sh
-lt watch web
-```
-
-Any extra arguments after the script name are passed through to the configured command:
-
-```sh
-lt lt init
-```
-
-Use `lt rm` to select linked worktrees to remove. Tab or Space toggles the highlighted worktree. The main worktree is not removable through this command, and selected worktrees are shown again with their paths before removal. Confirm with `y`; anything else cancels. If Git refuses because a selected worktree has modified or untracked files, `lt` asks before retrying that worktree with `--force`. If Git reports a stale/prunable worktree whose `.git` file is already missing, `lt` prunes the stale Git metadata and asks before deleting the leftover directory. When a removed worktree has an associated Codex chat, `lt` archives it with `codex archive`.
-
-Install locally while developing:
+For local development of this repository:
 
 ```sh
 npm install
 npm link
 ```
+
+The CLI is named `livetree` rather than `lt`, because `lt` is used by localtunnel.
+
+## Commands
+
+```sh
+livetree init
+livetree ls
+livetree dev <script> [args...]
+livetree tunnel <script>
+livetree tunnel stop [<script>|all]
+livetree serve [--tailscale] [--port <number>]
+```
+
+A bare configured script name is shorthand for `dev`, so `livetree web` and `livetree dev web` are equivalent.
+
+Run commands from any worktree. Livetree always reads `.ltconf` from the main worktree, so linked worktrees do not need their own copy.
+
+## Configuration
+
+Create `.ltconf` at the main worktree root:
+
+```yaml
+name: ecos
+
+init:
+  copy:
+    - modules/api/.env
+    - modules/web/.env.development.local
+    - modules/mobile/.env.local
+    - AGENTS.md
+  script: pnpm install
+
+dev:
+  api:
+    cmd: pnpm --dir modules/api start
+  web:
+    cmd: pnpm --dir modules/web start
+    env:
+      ECOS_API_BASE: ${url:api}
+    tunnelEnv:
+      ECOS_API_BASE: ${tunnelUrl:api}
+  metro:
+    cmd: pnpm --dir modules/mobile start
+    env:
+      EXPO_PUBLIC_BASE_URL_LOCAL: ${url:api}
+
+links:
+  graphiql: ${url:api}/graphiql
+  device: ecosconnect-development://expo-development-client/?url=${enc:tunnelUrl:metro}&apiBaseUrl=${enc:tunnelUrl:api}
+```
+
+The v2 schema is intentionally strict; old `run:` and shorthand `init:` forms are not supported.
+
+### Interpolation
+
+- `${url:api}` resolves to that worktree's stable local URL.
+- `${tunnelUrl:api}` resolves to its live, tailnet-only Tailscale Serve URL and produces a clear error if no share exists.
+- `${enc:tunnelUrl:api}` and `${enc:url:api}` URL-encode the resolved value.
+
+Values are resolved when a server starts or dashboard links render. `tunnelEnv` overrides matching `env` keys while a script is operating with tunnel dependencies.
+
+### Initialization
+
+`livetree init` initializes every worktree that lacks `.livetree/initialized`. It copies configured files from the main worktree when the destination is missing, runs the init script in each worktree, and then writes the marker. Missing source files are reported and skipped; existing destination files are preserved.
+
+## Dev servers
+
+```sh
+livetree dev api
+livetree web
+```
+
+The process stays in the foreground. Livetree starts the bundled portless proxy on unprivileged port 1355 when necessary, interpolates the configured environment, and registers the process under `<main-worktree>/.livetree/state/` while it is alive. On the first run, portless may request permission to trust its local certificate authority.
+
+Portless recognizes common frameworks, including Vite and Expo, and injects their port arguments when invoked directly. When a framework is hidden behind a package-manager script, or another tool does not honor `PORT`, configure its flag explicitly. Livetree will append the flag and a dynamically allocated unprivileged port:
+
+```yaml
+dev:
+  custom:
+    cmd: my-server
+    portArg: --port
+```
+
+If a wrapped framework also ignores `HOST`, include its host option in `cmd`;
+for example, `pnpm start --host 127.0.0.1` for Vite.
+
+## Tailnet sharing
+
+Start the local server first, then share it with devices and users authenticated to your Tailscale network:
+
+```sh
+livetree dev api
+livetree tunnel api
+```
+
+Livetree allocates a Tailscale HTTPS port, starts `tailscale serve`, and waits for the tailnet URL to respond before reporting it ready. The URL uses this Mac's stable MagicDNS name. It is not exposed to the public internet.
+
+If a script's `tunnelEnv` references another script, Livetree ensures that dependency tunnel first. Dashboard-managed servers are restarted automatically with the resolved tunnel environment. A foreground server cannot be restarted behind its terminal, so Livetree stops and tells you which `livetree dev` command to rerun.
+
+```sh
+livetree tunnel stop api
+livetree tunnel stop
+livetree tunnel stop all
+```
+
+With no target, `stop` affects tunnels for the current worktree. `all` affects this repository.
+
+## Dashboard
+
+```sh
+livetree serve
+```
+
+The dashboard binds to `127.0.0.1` and shows one card per active Git worktree, using its branch or primary-chat label, plus server health, Tailscale URLs, configured links, and QR codes. Its buttons start and stop managed dev servers and tailnet shares. Managed logs live below `.livetree/state/logs/`.
+
+To open the dashboard on another device:
+
+```sh
+livetree serve --tailscale
+```
+
+This exposes the dashboard through Tailscale Serve and prints its tailnet-only URL and a terminal QR code. Open it from a phone running Tailscale and signed into an authorized tailnet account; Tailscale provides the authentication and access policy.
+
+Use `--port <number>` to change the local dashboard port; `--port 0` asks the operating system for a free port.
+
+## Listing worktrees
+
+```sh
+livetree ls
+```
+
+The list includes one entry per active Git worktree: age, branch or primary-chat label, linked-worktree path, registered local servers, uptime, and tailnet URLs. The main checkout omits its path and chat history. The dashboard uses the same filtering. Stale process records are removed automatically.

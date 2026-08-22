@@ -57,8 +57,7 @@ export function makeContext(root, choices = []) {
     commonDir: path.join(root, ".git"),
     mainRoot: root,
     liveDir: path.join(root, ".livetree"),
-    srcLink: path.join(root, ".livetree", "src"),
-    stateFile: path.join(root, ".livetree", ".source"),
+    stateDir: path.join(root, ".livetree", "state"),
     choices,
   };
 }

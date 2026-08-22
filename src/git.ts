@@ -56,8 +56,3 @@ export function parseWorktreeList(output: string): WorktreeRecord[] {
 export function stripHeadsPrefix(value: string): string {
   return value.replace(/^refs\/heads\//, "");
 }
-
-export function formatGitFailure(error: unknown, command: string): string {
-  const output = error && typeof error === "object" && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "").trim() : "";
-  return output ? `${command} failed:\n${output}` : `${command} failed.`;
-}

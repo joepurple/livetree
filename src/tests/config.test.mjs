@@ -2,82 +2,58 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { parseLtConfig, readLtConfig } from "../../dist/config.js";
+import { parseLtConfig, readLtConfig, tryReadLtConfig } from "../../dist/config.js";
 import { CliError } from "../../dist/errors.js";
 import { makeContext, tempDir } from "./helpers.mjs";
 
-test("parses the structured init and run config", () => {
-  const config = parseLtConfig(`
+const parse = (source) => parseLtConfig(source, "/repo/.ltconf", "fallback");
+
+test("parses .ltconf v2 including tunnel env and links", () => {
+  assert.deepEqual(parse(`
+name: My Project
 init:
-  copy:
-    - modules/api/.env
-    - 123
+  copy: [modules/api/.env, 123]
   script: pnpm install
-run:
-  web: cd src/modules/web && pnpm start
+dev:
   api: pnpm api
-`);
-
-  assert.deepEqual(config, {
+  web:
+    cmd: pnpm web
+    env: { API_BASE: "\${url:api}" }
+    tunnelEnv: { API_BASE: "\${tunnelUrl:api}" }
+    portArg: --port
+links:
+  device: "app://open?url=\${enc:tunnelUrl:web}"
+`), {
+    configPath: "/repo/.ltconf",
+    name: "my-project",
     initScript: "pnpm install",
-    copyFiles: ["modules/api/.env", "123"],
-    runScripts: {
-      web: "cd src/modules/web && pnpm start",
-      api: "pnpm api",
+    copyFiles: [path.join("modules", "api", ".env"), "123"],
+    devScripts: {
+      api: { name: "api", cmd: "pnpm api", env: {}, tunnelEnv: {}, portArg: null },
+      web: {
+        name: "web", cmd: "pnpm web", env: { API_BASE: "${url:api}" },
+        tunnelEnv: { API_BASE: "${tunnelUrl:api}" }, portArg: "--port",
+      },
     },
+    links: { device: "app://open?url=${enc:tunnelUrl:web}" },
   });
 });
 
-test("parses supported init shorthands", () => {
-  assert.equal(parseLtConfig("init: npm install\n").initScript, "npm install");
-  assert.equal(parseLtConfig("initCommand: true\n").initScript, "true");
-  assert.equal(parseLtConfig("scripts:\n  init: npm ci\n").initScript, "npm ci");
-});
-
-test("readLtConfig normalizes relative copy paths and run scripts", (t) => {
+test("always reads config from the main worktree", (t) => {
   const root = tempDir("config", t);
-  writeFileSync(path.join(root, ".ltconf"), `
-init:
-  copy:
-    - ./packages/app/.env
-  script: npm install
-run:
-  web-app: npm run web
-`);
-
-  assert.deepEqual(readLtConfig(makeContext(root)), {
-    configPath: path.join(root, ".ltconf"),
-    initScript: "npm install",
-    copyFiles: [path.join("packages", "app", ".env")],
-    runScripts: {
-      "web-app": "npm run web",
-    },
-  });
+  writeFileSync(path.join(root, ".ltconf"), "dev:\n  web: npm run web\n");
+  const config = readLtConfig(makeContext(root));
+  assert.equal(config.name, path.basename(root).slice(0, 24));
+  assert.equal(config.devScripts.web.cmd, "npm run web");
+  assert.equal(tryReadLtConfig({ mainRoot: tempDir("no-config", t) }), null);
 });
 
-test("readLtConfig rejects missing, invalid, and unsafe config", (t) => {
-  const missingRoot = tempDir("missing-config", t);
-  assert.throws(() => readLtConfig(makeContext(missingRoot)), /No \.ltconf found/);
-
-  const invalidYamlRoot = tempDir("invalid-yaml", t);
-  writeFileSync(path.join(invalidYamlRoot, ".ltconf"), "init: [");
-  assert.throws(() => readLtConfig(makeContext(invalidYamlRoot)), /Invalid \.ltconf YAML/);
-
-  assert.throws(() => parseLtConfig("- just\n- a list\n"), /must contain a YAML mapping/);
-
-  const unsafeCopyRoot = tempDir("unsafe-copy", t);
-  writeFileSync(path.join(unsafeCopyRoot, ".ltconf"), "init:\n  copy:\n    - ../secret\n  script: npm install\n");
-  assert.throws(() => readLtConfig(makeContext(unsafeCopyRoot)), /relative files inside the project/);
-
-  const badRunRoot = tempDir("bad-run", t);
-  writeFileSync(path.join(badRunRoot, ".ltconf"), "run:\n  bad name: npm start\n");
-  assert.throws(() => readLtConfig(makeContext(badRunRoot)), /Run script names/);
-
-  const emptyRunRoot = tempDir("empty-run", t);
-  writeFileSync(path.join(emptyRunRoot, ".ltconf"), "run:\n  web: ''\n");
-  assert.throws(() => readLtConfig(makeContext(emptyRunRoot)), /must not be empty/);
-});
-
-test("config errors use CliError", () => {
-  assert.throws(() => parseLtConfig("["), CliError);
+test("rejects v1, unsafe paths, invalid env, and malformed definitions", () => {
+  assert.throws(() => parse("run:\n  web: npm start\n"), /Unknown .ltconf key/);
+  assert.throws(() => parse("init: npm install\n"), /must be a mapping/);
+  assert.throws(() => parse("init:\n  copy: [../secret]\n"), /relative files inside/);
+  assert.throws(() => parse("dev:\n  bad name: npm start\n"), /Dev script names/);
+  assert.throws(() => parse("dev:\n  web:\n    cmd: npm start\n    env:\n      A=B: nope\n"), /invalid environment variable/);
+  assert.throws(() => parse("dev:\n  web:\n    cmd: ''\n"), /non-empty 'cmd'/);
+  assert.throws(() => parse("["), CliError);
 });
