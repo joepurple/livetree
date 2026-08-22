@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   detachTailscaleServe,
   nextTailscaleServePort,
+  parseTailscaleStatus,
   readTailscaleInfo,
   resolveTailscaleCli,
   tailscaleDnsName,
@@ -14,6 +15,11 @@ import {
   tailscaleUrl,
 } from "../../dist/tailscale.js";
 import { tempDir } from "./helpers.mjs";
+
+test("parses Tailscale status with surrounding launcher diagnostics", () => {
+  assert.equal(parseTailscaleStatus('launcher notice\n{"BackendState":"Running"}\n').BackendState, "Running");
+  assert.throws(() => parseTailscaleStatus("not json"), /malformed status JSON.*not json/);
+});
 
 test("reads connected Tailscale identity and formats Serve URLs", (t) => {
   const root = tempDir("fake-tailscale", t);

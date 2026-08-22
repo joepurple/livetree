@@ -155,9 +155,9 @@ This exposes the dashboard through Tailscale Serve and prints its tailnet-only U
 
 Use `--port <number>` to change the local dashboard port; `--port 0` asks the operating system for a free port.
 
-`livetree server start` runs in the background and attempts to create the iPhone Tailnet link by default. An unavailable or disconnected Tailscale installation is non-fatal, and the dashboard can retry it later. Use `--no-tailscale` for a local-only server, or `--foreground` to keep the server attached to the current terminal. Stop a background server with `livetree server stop`. While that background instance is healthy, opening the macOS app connects to it instead of starting a second bundled server; quitting the app leaves the background instance running.
+`livetree server start` runs in the background and attempts to create the Tailscale Link by default. An unavailable or disconnected Tailscale installation is non-fatal, and the dashboard can retry it later. Use `--no-tailscale` for a local-only server, or `--foreground` to keep the server attached to the current terminal. Stop a background server with `livetree server stop`. While that background instance is healthy, opening the macOS app connects to it instead of starting a second bundled server; quitting the app leaves the background instance running.
 
-The dashboard reports the iPhone link as disabled, starting, ready, or unavailable based on live server state. If Tailscale is disconnected or startup fails, use **Retry iPhone link** in the project rail after reconnecting it; the existing LiveTree server stays running.
+The dashboard reports the Tailscale Link as disabled, starting, ready, or unavailable based on live server state. If Tailscale is disconnected or startup fails, use **Retry Tailscale Link** in the project rail after reconnecting it; the existing LiveTree server stays running.
 
 ## Native macOS and iOS apps
 

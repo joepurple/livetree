@@ -1,5 +1,5 @@
 import {
-  ArrowUpRight, Check, ChevronLeft, ChevronRight, Copy, Folder, FolderGit2, Link2,
+  ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Folder, FolderGit2, Link2,
   LoaderCircle, PanelLeftClose, PanelLeftOpen, Play, Plus, RadioTower, RefreshCw,
   MonitorSmartphone, Server, Settings, Square, Terminal as TerminalIcon, Trash2, TreePine, TriangleAlert, Wifi, X,
 } from "lucide-solid";
@@ -11,7 +11,7 @@ import { TerminalPage } from "./TerminalPage";
 import { apiUrl, clearPersistedDesktopUrl, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
-type MobileView = "projects" | "worktrees" | "workspace";
+type MobileView = "worktrees" | "workspace";
 type ActivityToast = {
   id: string;
   tone: "loading" | "success" | "error";
@@ -66,6 +66,7 @@ function storedString(key: string): string | undefined {
 }
 
 export default function App() {
+  let projectPicker: HTMLDivElement | undefined;
   let dashboardScrollY = 0;
   let refreshTimer: number | undefined;
   let nativeTimer: number | undefined;
@@ -78,12 +79,11 @@ export default function App() {
   const [toasts, setToasts] = createSignal<ActivityToast[]>([]);
   const [logs, setLogs] = createSignal<LogSelection>();
   const [refreshing, setRefreshing] = createSignal(false);
-  const [projectCollapsed, setProjectCollapsed] = createSignal(storedBoolean("livetree.projectRailCollapsed"));
   const [worktreeCollapsed, setWorktreeCollapsed] = createSignal(storedBoolean("livetree.worktreeRailCollapsed"));
-  const [projectWidth, setProjectWidth] = createSignal(storedWidth("livetree.projectRailWidth", 218));
   const [worktreeWidth, setWorktreeWidth] = createSignal(storedWidth("livetree.worktreeRailWidth", 294));
   const [terminalWidth, setTerminalWidth] = createSignal(storedWidth("livetree.terminalWidth", 440));
-  const [mobileView, setMobileView] = createSignal<MobileView>("projects");
+  const [mobileView, setMobileView] = createSignal<MobileView>("worktrees");
+  const [projectMenuOpen, setProjectMenuOpen] = createSignal(false);
   const [nativeInfo, setNativeInfo] = createSignal<NativeInfo>();
   const [appReady, setAppReady] = createSignal(!runningInTauri());
   const [projectDialogOpen, setProjectDialogOpen] = createSignal(false);
@@ -234,7 +234,7 @@ export default function App() {
         body: "{}",
       });
       const payload = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Unable to start the iPhone link");
+      if (!response.ok) throw new Error(payload.error ?? "Unable to start the Tailscale Link");
       await load();
       setError(undefined);
     } catch (caught) {
@@ -399,13 +399,13 @@ export default function App() {
     const mobileQuery = window.matchMedia("(max-width: 820px)");
     if (mobileQuery.matches) {
       const initial = history.state?.livetreeMobileView;
-      const view: MobileView = initial === "worktrees" || initial === "workspace" ? initial : "projects";
+      const view: MobileView = initial === "workspace" ? "workspace" : "worktrees";
       setMobileView(view);
       history.replaceState({ ...history.state, livetreeMobileView: view }, "");
     }
     const onPopState = (event: PopStateEvent) => {
       const view = event.state?.livetreeMobileView;
-      setMobileView(view === "worktrees" || view === "workspace" ? view : "projects");
+      setMobileView(view === "workspace" ? "workspace" : "worktrees");
       const terminal = event.state?.livetreeTerminal;
       if (terminal && typeof terminal.project === "string" && typeof terminal.worktree === "string" && typeof terminal.script === "string") {
         const project = state()?.projects.find((candidate) => candidate.id === terminal.project);
@@ -423,7 +423,7 @@ export default function App() {
         !appReady() ||
         event.pointerType !== "touch" ||
         event.clientX > 28 ||
-        (!logs() && mobileView() === "projects")
+        (!logs() && mobileView() === "worktrees")
       ) {
         return;
       }
@@ -440,17 +440,23 @@ export default function App() {
         closeLogs();
       } else if (mobileView() === "workspace") {
         backMobile("worktrees");
-      } else if (mobileView() === "worktrees") {
-        backMobile("projects");
       }
     };
     const onPointerCancel = () => {
       backSwipe = undefined;
     };
+    const onDocumentPointerDown = (event: PointerEvent) => {
+      if (projectMenuOpen() && !projectPicker?.contains(event.target as Node)) setProjectMenuOpen(false);
+    };
+    const onDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProjectMenuOpen(false);
+    };
     window.addEventListener("popstate", onPopState);
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerCancel);
+    document.addEventListener("pointerdown", onDocumentPointerDown);
+    document.addEventListener("keydown", onDocumentKeyDown);
     onCleanup(() => {
       window.clearInterval(refreshTimer);
       window.clearInterval(nativeTimer);
@@ -458,6 +464,8 @@ export default function App() {
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerCancel);
+      document.removeEventListener("pointerdown", onDocumentPointerDown);
+      document.removeEventListener("keydown", onDocumentKeyDown);
       for (const timer of toastTimers.values()) window.clearTimeout(timer);
       toastTimers.clear();
     });
@@ -482,7 +490,8 @@ export default function App() {
     setSelectedProjectId(project.id);
     setSelectedPath(project.worktrees[0]?.path);
     setLogs(undefined);
-    navigateMobile("worktrees");
+    setProjectMenuOpen(false);
+    if (window.matchMedia("(max-width: 820px)").matches && mobileView() !== "worktrees") navigateMobile("worktrees");
   }
 
   function openLogs(project: Project, worktree: Worktree, script: Script): void {
@@ -510,36 +519,29 @@ export default function App() {
     requestAnimationFrame(() => window.scrollTo({ top: dashboardScrollY }));
   }
 
-  function toggleRail(kind: "project" | "worktree"): void {
-    if (kind === "project") {
-      const next = !projectCollapsed();
-      setProjectCollapsed(next);
-      try { window.localStorage.setItem("livetree.projectRailCollapsed", String(next)); } catch {}
-      return;
-    }
+  function toggleWorktreeRail(): void {
     const next = !worktreeCollapsed();
     setWorktreeCollapsed(next);
     try { window.localStorage.setItem("livetree.worktreeRailCollapsed", String(next)); } catch {}
   }
 
-  function beginResize(kind: "project" | "worktree", event: PointerEvent): void {
+  function beginWorktreeResize(event: PointerEvent): void {
     if (window.matchMedia("(max-width: 820px)").matches) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = kind === "project" ? projectWidth() : worktreeWidth();
-    const limits = kind === "project" ? [170, 340] : [220, 440];
+    const startWidth = worktreeWidth();
+    const limits = [220, 440];
     let currentWidth = startWidth;
     document.body.classList.add("is-resizing-rail");
     const move = (moveEvent: PointerEvent) => {
       currentWidth = Math.min(limits[1], Math.max(limits[0], startWidth + moveEvent.clientX - startX));
-      if (kind === "project") setProjectWidth(currentWidth);
-      else setWorktreeWidth(currentWidth);
+      setWorktreeWidth(currentWidth);
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       document.body.classList.remove("is-resizing-rail");
-      try { window.localStorage.setItem(`livetree.${kind}RailWidth`, String(currentWidth)); } catch {}
+      try { window.localStorage.setItem("livetree.worktreeRailWidth", String(currentWidth)); } catch {}
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop, { once: true });
@@ -571,100 +573,75 @@ export default function App() {
     <div
       class="app-shell"
       classList={{
-        "app-shell--project-collapsed": projectCollapsed(),
         "app-shell--worktree-collapsed": worktreeCollapsed(),
         "app-shell--terminal-open": Boolean(logs()),
-        "mobile-view--projects": mobileView() === "projects",
         "mobile-view--worktrees": mobileView() === "worktrees",
         "mobile-view--workspace": mobileView() === "workspace",
       }}
-      style={`--project-width:${projectWidth()}px;--worktree-width:${worktreeWidth()}px;--terminal-width:${terminalWidth()}px`}
+      style={`--worktree-width:${worktreeWidth()}px;--terminal-width:${terminalWidth()}px`}
     >
-      <aside class="project-rail">
-        <div class="project-rail__top">
-          <div class="brand"><span class="brand__mark"><TreePine size={19} /></span><span class="brand__name">livetree</span></div>
-          <Button size="icon" variant="ghost" class="rail-toggle" aria-label={projectCollapsed() ? "Expand projects sidebar" : "Collapse projects sidebar"} aria-expanded={!projectCollapsed()} onClick={() => toggleRail("project")}>
-            {projectCollapsed() ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-          </Button>
-        </div>
-        <div class="project-rail__heading">
-          <div class="rail-label">Projects</div>
-          <Button size="icon" variant="ghost" class="project-add-button" aria-label="Add project" title="Add project" disabled={isBusy("project:pick") || isBusy("project:add")} onClick={() => void chooseProject()}>
-            {isBusy("project:pick") ? <LoaderCircle class="spin" size={14} /> : <Plus size={15} />}
-          </Button>
-        </div>
-        <Show when={state()} fallback={<div class="project-skeleton" />}>
-          {(current) => (
-            <div class="project-list" aria-label="Projects">
-              <For each={current().projects}>
-                {(project) => (
-                  <div class="project-row" classList={{ "project-row--active": selectedProject()?.id === project.id }}>
-                    <button class="project-item" type="button" title={project.path} onClick={() => selectProject(project)}>
-                      <span class="project-item__icon"><FolderGit2 size={18} /></span>
-                      <span class="project-item__copy"><strong>{project.name}</strong><small>{project.worktrees.length} worktrees</small></span>
-                      <span class="project-item__count">{runningCount(project)}</span>
-                      <ChevronRight size={17} class="mobile-disclosure" />
-                    </button>
-                    <button
-                      type="button"
-                      class="project-remove-button"
-                      aria-label={`Remove ${project.name} from project list`}
-                      title="Remove from list"
-                      disabled={isBusy(`project:remove:${project.id}`) || isBusy(`worktree:remove-project:${project.id}`)}
-                      onClick={() => requestProjectRemoval(project)}
-                    >
-                      {isBusy(`project:remove:${project.id}`) ? <LoaderCircle class="spin" size={13} /> : <X size={13} />}
-                    </button>
-                  </div>
-                )}
-              </For>
-              <Show when={current().projects.length === 0}>
-                <div class="project-list-empty"><FolderGit2 size={20} /><strong>No projects yet</strong><small>Add a project from the desktop app.</small></div>
-              </Show>
-            </div>
-          )}
-        </Show>
-        <div class="project-rail__footer">
-          <Show when={nativeInfo()?.platform === "ios"} fallback={
-            <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable iPhone link</button>}>
-              <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
-                <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy iPhone URL</button>
-              </Match>
-              <Match when={state()?.tailnet.status === "starting" || isBusy("tailnet:start")}>
-                <span class="tailnet-status" title="Starting Tailscale Serve"><LoaderCircle class="spin" size={13} />Starting iPhone link</span>
-              </Match>
-              <Match when={state()?.tailnet.status === "unavailable"}>
-                <button type="button" class="tailnet-copy" title={state()?.tailnet.error ?? "Tailscale is unavailable"} disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Retry iPhone link</button>
-              </Match>
-            </Switch>
-          }>
-            <button type="button" class="tailnet-copy" onClick={changeDesktop}><Settings size={13} />Change desktop</button>
-          </Show>
-        </div>
-        <div class="rail-resizer" role="separator" aria-label="Resize projects sidebar" aria-orientation="vertical" aria-valuemin="170" aria-valuemax="340" aria-valuenow={projectWidth()} onPointerDown={(event) => beginResize("project", event)} />
-      </aside>
-
       <aside class="worktree-rail">
-        <div class="mobile-stack-header">
-          <Button size="sm" variant="ghost" class="mobile-back" aria-label="Back to projects" onClick={() => backMobile("projects")}><ChevronLeft size={18} /><span>Projects</span></Button>
-          <strong>{selectedProject()?.name ?? "Worktrees"}</strong>
-          <Button size="icon" variant="ghost" aria-label="Refresh dashboard" onClick={() => void load(true)}><RefreshCw size={16} classList={{ spin: refreshing() }} /></Button>
-        </div>
-        <div class="mobile-screen-heading">Worktrees</div>
         <header class="worktree-rail__header">
-          <div class="worktree-rail__title">
-            <Show when={projectCollapsed()}><Button size="icon" variant="ghost" class="rail-expand" aria-label="Expand projects sidebar" onClick={() => toggleRail("project")}><PanelLeftOpen size={16} /></Button></Show>
-            <h1>{selectedProject()?.name ?? (state() ? "No project" : "Loading")}</h1>
+          <div class="project-picker" ref={projectPicker}>
+            <button
+              type="button"
+              class="project-picker__trigger"
+              aria-label="Select project"
+              aria-haspopup="menu"
+              aria-expanded={projectMenuOpen()}
+              onClick={() => setProjectMenuOpen((open) => !open)}
+            >
+              <span class="project-picker__icon"><FolderGit2 size={16} /></span>
+              <span class="project-picker__copy"><small>Project</small><strong>{selectedProject()?.name ?? (state() ? "No project" : "Loading")}</strong></span>
+              <ChevronDown size={15} class="project-picker__chevron" classList={{ "project-picker__chevron--open": projectMenuOpen() }} />
+            </button>
+            <Show when={projectMenuOpen()}>
+              <div class="project-menu" role="menu" aria-label="Projects">
+                <div class="project-menu__label">Switch project</div>
+                <Show when={state()} fallback={<div class="project-menu__empty">Loading projects…</div>}>
+                  {(current) => (
+                    <>
+                      <For each={current().projects}>
+                        {(project) => (
+                          <div class="project-menu__row" classList={{ "project-menu__row--active": selectedProject()?.id === project.id }}>
+                            <button type="button" class="project-menu__option" role="menuitemradio" aria-checked={selectedProject()?.id === project.id} title={project.path} onClick={() => selectProject(project)}>
+                              <FolderGit2 size={16} />
+                              <span><strong>{project.name}</strong><small>{project.worktrees.length} worktrees · {runningCount(project)} running</small></span>
+                              <Show when={selectedProject()?.id === project.id}><Check size={15} /></Show>
+                            </button>
+                            <button
+                              type="button"
+                              class="project-menu__remove"
+                              aria-label={`Remove ${project.name} from project list`}
+                              title="Remove from list"
+                              disabled={isBusy(`project:remove:${project.id}`) || isBusy(`worktree:remove-project:${project.id}`)}
+                              onClick={() => { setProjectMenuOpen(false); requestProjectRemoval(project); }}
+                            >
+                              {isBusy(`project:remove:${project.id}`) ? <LoaderCircle class="spin" size={13} /> : <X size={13} />}
+                            </button>
+                          </div>
+                        )}
+                      </For>
+                      <Show when={current().projects.length === 0}><div class="project-menu__empty">No projects yet</div></Show>
+                    </>
+                  )}
+                </Show>
+                <button type="button" class="project-menu__add" role="menuitem" disabled={isBusy("project:pick") || isBusy("project:add")} onClick={() => { setProjectMenuOpen(false); void chooseProject(); }}>
+                  {isBusy("project:pick") ? <LoaderCircle class="spin" size={14} /> : <Plus size={15} />} Add project
+                </button>
+              </div>
+            </Show>
           </div>
           <div class="worktree-rail__controls">
             <Button size="icon" variant="ghost" class="refresh-button" aria-label="Refresh dashboard" onClick={() => void load(true)}>
               <RefreshCw size={16} classList={{ spin: refreshing() }} />
             </Button>
-            <Button size="icon" variant="ghost" class="rail-toggle" aria-label={worktreeCollapsed() ? "Expand worktrees sidebar" : "Collapse worktrees sidebar"} aria-expanded={!worktreeCollapsed()} onClick={() => toggleRail("worktree")}>
+            <Button size="icon" variant="ghost" class="rail-toggle" aria-label={worktreeCollapsed() ? "Expand worktrees sidebar" : "Collapse worktrees sidebar"} aria-expanded={!worktreeCollapsed()} onClick={toggleWorktreeRail}>
               {worktreeCollapsed() ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
             </Button>
           </div>
         </header>
+        <div class="mobile-screen-heading">Worktrees</div>
         <div class="worktree-list" aria-label="Worktrees">
           <For each={filteredWorktrees()}>
             {(worktree) => {
@@ -683,7 +660,24 @@ export default function App() {
           </For>
           <Show when={filteredWorktrees().length === 0}><div class="empty-filter">{selectedProject() ? "No matching worktrees" : "No worktrees"}</div></Show>
         </div>
-        <div class="rail-resizer" role="separator" aria-label="Resize worktrees sidebar" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="440" aria-valuenow={worktreeWidth()} onPointerDown={(event) => beginResize("worktree", event)} />
+        <div class="worktree-rail__footer">
+          <Show when={nativeInfo()?.platform === "ios"} fallback={
+            <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable Tailscale Link</button>}>
+              <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
+                <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy Tailscale Link</button>
+              </Match>
+              <Match when={state()?.tailnet.status === "starting" || isBusy("tailnet:start")}>
+                <span class="tailnet-status" title="Starting Tailscale Serve"><LoaderCircle class="spin" size={13} />Starting Tailscale Link</span>
+              </Match>
+              <Match when={state()?.tailnet.status === "unavailable"}>
+                <button type="button" class="tailnet-copy" title={state()?.tailnet.error ?? "Tailscale is unavailable"} disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Retry Tailscale Link</button>
+              </Match>
+            </Switch>
+          }>
+            <button type="button" class="tailnet-copy" onClick={changeDesktop}><Settings size={13} />Change desktop</button>
+          </Show>
+        </div>
+        <div class="rail-resizer" role="separator" aria-label="Resize worktrees sidebar" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="440" aria-valuenow={worktreeWidth()} onPointerDown={beginWorktreeResize} />
       </aside>
 
       <main class="workspace">
@@ -692,10 +686,9 @@ export default function App() {
           <strong>{selectedProject()?.name ?? "livetree"}</strong>
           <span class="mobile-stack-header__spacer" />
         </div>
-        <Show when={worktreeCollapsed() || (projectCollapsed() && worktreeCollapsed())}>
+        <Show when={worktreeCollapsed()}>
           <div class="workspace-rail-controls">
-            <Show when={projectCollapsed() && worktreeCollapsed()}><Button size="icon" variant="ghost" aria-label="Expand projects sidebar" onClick={() => toggleRail("project")}><PanelLeftOpen size={16} /></Button></Show>
-            <Show when={worktreeCollapsed()}><Button size="icon" variant="ghost" aria-label="Expand worktrees sidebar" onClick={() => toggleRail("worktree")}><PanelLeftOpen size={16} /></Button></Show>
+            <Button size="icon" variant="ghost" aria-label="Expand worktrees sidebar" onClick={toggleWorktreeRail}><PanelLeftOpen size={16} /></Button>
           </div>
         </Show>
         <Show when={error()}>{(message) => <div class="error-banner" role="alert"><strong>Something went wrong</strong><span>{message()}</span><Show when={nativeInfo()?.platform === "ios"}><Button size="sm" variant="outline" onClick={changeDesktop}>Change server</Button></Show><Button size="sm" onClick={() => void load(true)}>Try again</Button></div>}</Show>
@@ -827,7 +820,7 @@ function ConnectionSetup(props: { platform?: NativeInfo["platform"]; error?: str
       <div class="connection-setup__card">
         <span class="brand__mark"><TreePine size={28} /></span>
         <Show when={props.platform === "ios"} fallback={<div><h1>Starting LiveTree</h1><p>The Mac app is launching its embedded dashboard service.</p></div>}>
-          <div><h1>Connect to LiveTree</h1><p>Open LiveTree on your Mac, copy its iPhone URL, and paste it here. Both devices must be signed into the same Tailscale network.</p></div>
+          <div><h1>Connect to LiveTree</h1><p>Open LiveTree on your Mac, copy its Tailscale Link, and paste it here. Both devices must be signed into the same Tailscale network.</p></div>
           <form onSubmit={submit}>
             <label for="desktop-url">Tailnet dashboard URL</label>
             <input id="desktop-url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" placeholder="https://your-mac.tailnet.ts.net" value={value()} onInput={(event) => setValue(event.currentTarget.value)} />

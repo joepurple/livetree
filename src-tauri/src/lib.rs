@@ -12,6 +12,7 @@ use std::{
   net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream},
   path::PathBuf,
   process::Command,
+  thread,
   time::Duration,
 };
 #[cfg(desktop)]
@@ -227,16 +228,29 @@ fn local_dashboard_port(url: &str) -> Option<u16> {
 
 #[cfg(desktop)]
 fn background_dashboard_is_healthy(url: &str, expected_pid: u32) -> bool {
+  for attempt in 0..3 {
+    if probe_background_dashboard(url, expected_pid) {
+      return true;
+    }
+    if attempt < 2 {
+      thread::sleep(Duration::from_millis(150));
+    }
+  }
+  false
+}
+
+#[cfg(desktop)]
+fn probe_background_dashboard(url: &str, expected_pid: u32) -> bool {
   let Some(port) = local_dashboard_port(url) else {
     return false;
   };
   let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
-  let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
+  let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(1_500)) else {
     return false;
   };
-  let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-  let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-  if stream.write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+  let _ = stream.set_read_timeout(Some(Duration::from_millis(1_500)));
+  let _ = stream.set_write_timeout(Some(Duration::from_millis(1_500)));
+  if stream.write_all(b"GET /api/health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").is_err() {
     return false;
   }
 
@@ -439,7 +453,7 @@ mod tests {
       let (mut stream, _) = listener.accept().expect("accept health request");
       let mut request = [0_u8; 1024];
       let size = stream.read(&mut request).expect("read health request");
-      assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /api/health "));
+      assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /api/health HTTP/1.0"));
       let body = format!(r#"{{"ok":true,"service":"livetree","pid":{}}}"#, std::process::id());
       write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
         .expect("write health response");
@@ -448,4 +462,5 @@ mod tests {
     assert!(background_dashboard_is_healthy(&format!("http://127.0.0.1:{port}/"), std::process::id()));
     server.join().expect("health test server");
   }
+
 }

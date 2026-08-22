@@ -816,8 +816,13 @@ function readJsonBody(request: IncomingMessage): Promise<ActionBody> {
 }
 
 function sendJson(response: ServerResponse, status: number, value: object): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-  response.end(`${JSON.stringify(value)}\n`);
+  const body = `${JSON.stringify(value)}\n`;
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+  });
+  response.end(body);
 }
 
 function sendDashboardAsset(response: ServerResponse, relativePath: string): void {

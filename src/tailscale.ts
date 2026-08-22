@@ -60,12 +60,7 @@ export function readTailscaleInfo(binPath = resolveTailscaleCli()): TailscaleInf
     throw new CliError(`Could not read Tailscale status: ${result.error?.message ?? (result.stderr.trim() || "unknown error")}`);
   }
 
-  let status: TailscaleStatus;
-  try {
-    status = JSON.parse(result.stdout) as TailscaleStatus;
-  } catch {
-    throw new CliError("Tailscale returned malformed status JSON.");
-  }
+  const status = parseTailscaleStatus(result.stdout);
 
   if (status.BackendState !== "Running" || status.Self?.Online === false) {
     throw new CliError("Tailscale is not connected. Open Tailscale or run 'tailscale up', then try again.");
@@ -73,6 +68,19 @@ export function readTailscaleInfo(binPath = resolveTailscaleCli()): TailscaleInf
 
   const dnsName = tailscaleDnsName(status);
   return { binPath, dnsName, baseUrl: `https://${dnsName}` };
+}
+
+export function parseTailscaleStatus(raw: string): TailscaleStatus {
+  const normalized = raw.trim();
+  const firstBrace = normalized.indexOf("{");
+  const lastBrace = normalized.lastIndexOf("}");
+  const json = firstBrace >= 0 && lastBrace >= firstBrace ? normalized.slice(firstBrace, lastBrace + 1) : normalized;
+  try {
+    return JSON.parse(json) as TailscaleStatus;
+  } catch {
+    const detail = normalized ? ` Output: ${normalized.slice(0, 200)}` : " No output was returned.";
+    throw new CliError(`Tailscale returned malformed status JSON.${detail}`);
+  }
 }
 
 export function tailscaleDnsName(status: TailscaleStatus): string {
