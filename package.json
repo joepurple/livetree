@@ -24,7 +24,7 @@
     "ios:init": "tauri ios init --skip-targets-install",
     "ios:dev": "tauri ios dev",
     "ios:build": "tauri ios build",
-    "test": "npm run build && node --test --experimental-test-coverage $(find src -path '*/tests/*.test.mjs' -print)",
+    "test": "npm run build && node --test --experimental-test-coverage $(find src dashboard -path '*/tests/*.test.mjs' -print)",
     "link": "npm run build && npm link"
   },
   "devDependencies": {
