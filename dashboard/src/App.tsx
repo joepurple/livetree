@@ -8,8 +8,8 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
-import { apiUrl, normalizeDesktopUrl, pickProjectFolder, readNativeInfo, runningInTauri, setApiBase, type NativeInfo } from "./native";
-import type { DashboardState, LogSelection, Project, Script, Worktree } from "./types";
+import { apiUrl, normalizeDesktopUrl, openExternalUrl, pickProjectFolder, readNativeInfo, runningInTauri, setApiBase, type NativeInfo } from "./native";
+import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "projects" | "worktrees" | "workspace";
 
@@ -34,6 +34,12 @@ function worktreeTitle(worktree: Worktree): string {
 
 function branchTitle(worktree: Worktree): string {
   return worktree.branch ?? worktree.ref ?? "detached";
+}
+
+function openExternalLink(event: MouseEvent, url: string): void {
+  if (!runningInTauri()) return;
+  event.preventDefault();
+  void openExternalUrl(url).catch((error) => console.error(`Unable to open ${url}`, error));
 }
 
 function storedBoolean(key: string): boolean {
@@ -604,6 +610,7 @@ export default function App() {
                   projectId={project().id}
                   projectName={project().name}
                   worktree={worktree()}
+                  platform={nativeInfo()?.platform}
                   busy={busy()}
                   onAction={(kind, targetWorktree, script) => action(kind, project(), targetWorktree, script)}
                   onLogs={(script) => openLogs(project(), worktree(), script)}
@@ -723,12 +730,15 @@ function WorktreeView(props: {
   projectId: string;
   projectName: string;
   worktree: Worktree;
+  platform?: NativeInfo["platform"];
   busy?: string;
   onAction: (kind: string, worktree: Worktree, script: Script) => Promise<void>;
   onLogs: (script: Script) => void;
   onRemove: () => void;
 }) {
   const [copiedPath, setCopiedPath] = createSignal<string>();
+  const [expandedQr, setExpandedQr] = createSignal<string>();
+  const [shortcutError, setShortcutError] = createSignal<{ name: string; message: string }>();
   let copiedTimer: number | undefined;
   const isBusy = (kind: string, script: Script) => props.busy === `${props.projectId}:${props.worktree.path}:${script.script}:${kind}`;
 
@@ -751,6 +761,25 @@ function WorktreeView(props: {
   }
 
   onCleanup(() => window.clearTimeout(copiedTimer));
+
+  async function openShortcut(event: MouseEvent, link: Link): Promise<void> {
+    if (!runningInTauri() || !link.url) return;
+    event.preventDefault();
+    setShortcutError(undefined);
+    try {
+      await openExternalUrl(link.url);
+    } catch (caught) {
+      const protocol = new URL(link.url).protocol;
+      const requiresMobileApp = protocol !== "http:" && protocol !== "https:";
+      if (props.platform === "macos" && requiresMobileApp && link.qr) {
+        setExpandedQr(link.name);
+        setShortcutError({ name: link.name, message: "This shortcut opens on iPhone. Scan the QR code below." });
+        return;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setShortcutError({ name: link.name, message: `Unable to open shortcut: ${message}` });
+    }
+  }
 
   return (
     <div class="workspace__inner">
@@ -787,8 +816,8 @@ function WorktreeView(props: {
                   <span class="server-icon" classList={{ "server-icon--running": script.running }}><Server size={18} /></span>
                   <div>
                     <div class="server-name">
-                      <a href={script.url} target="_blank" rel="noreferrer" title={script.url}><span>{script.script}</span><ArrowUpRight size={13} /></a>
-                      <Show when={script.tunnelUrl}><a class="server-tunnel-link" href={script.tunnelUrl!} target="_blank" rel="noreferrer" title={script.tunnelUrl!} aria-label={`Open ${script.script} Tailscale URL`}><Wifi size={13} /></a></Show>
+                      <a href={script.url} target="_blank" rel="noreferrer" title={script.url} onClick={(event) => openExternalLink(event, script.url)}><span>{script.script}</span><ArrowUpRight size={13} /></a>
+                      <Show when={script.tunnelUrl}><a class="server-tunnel-link" href={script.tunnelUrl!} target="_blank" rel="noreferrer" title={script.tunnelUrl!} aria-label={`Open ${script.script} Tailscale URL`} onClick={(event) => openExternalLink(event, script.tunnelUrl!)}><Wifi size={13} /></a></Show>
                       <Badge tone={script.healthy ? "success" : script.running ? "warning" : "neutral"}>{script.healthy ? "healthy" : script.running ? "starting" : "stopped"}</Badge>
                     </div>
                     <span class="server-meta">{script.running ? `PID ${script.pid} · up ${age(script.startedAtMs)}` : "Ready to start"}</span>
@@ -819,12 +848,13 @@ function WorktreeView(props: {
               <Card class="link-card">
                 <div class="link-card__heading">
                   <Show when={link.available && link.url} fallback={<strong>{link.name}</strong>}>
-                    <a href={link.url!} target="_blank" rel="noreferrer" title={link.url!}><span>{link.name}</span><ArrowUpRight size={13} /></a>
+                    <a href={link.url!} target="_blank" rel="noreferrer" title={link.url!} onClick={(event) => void openShortcut(event, link)}><span>{link.name}</span><ArrowUpRight size={13} /></a>
                   </Show>
                   <Badge tone={link.available ? "success" : "warning"}>{link.available ? "available" : "unavailable"}</Badge>
                 </div>
                 <Show when={!link.available || !link.url}><span class="link-card__error">{link.error}</span></Show>
-                <Show when={link.qr}><details class="qr-details"><summary>Show QR code</summary><img src={`data:image/svg+xml,${encodeURIComponent(link.qr!)}`} alt={`QR code for ${link.name}`} /></details></Show>
+                <Show when={shortcutError()?.name === link.name}><span class="link-card__error">{shortcutError()?.message}</span></Show>
+                <Show when={link.qr}><details class="qr-details" open={expandedQr() === link.name} onToggle={(event) => setExpandedQr(event.currentTarget.open ? link.name : undefined)}><summary>Show QR code</summary><img src={`data:image/svg+xml,${encodeURIComponent(link.qr!)}`} alt={`QR code for ${link.name}`} /></details></Show>
               </Card>
             )}
           </For>

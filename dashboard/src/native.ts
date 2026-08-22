@@ -28,6 +28,10 @@ export async function pickProjectFolder(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+export async function openExternalUrl(value: string): Promise<void> {
+  await invoke("open_external_url", { url: value });
+}
+
 export function setApiBase(value: string | undefined): void {
   apiBase = value ? value.replace(/\/+$/, "") : undefined;
 }

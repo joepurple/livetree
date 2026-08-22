@@ -1,5 +1,7 @@
 use serde::Serialize;
 use std::sync::Mutex;
+#[cfg(not(target_os = "macos"))]
+use tauri_plugin_opener::OpenerExt;
 #[cfg(desktop)]
 use std::{env, process::Command};
 #[cfg(desktop)]
@@ -42,6 +44,53 @@ impl Default for AppState {
 #[tauri::command]
 fn native_info(state: tauri::State<'_, AppState>) -> NativeInfo {
   state.info.lock().expect("native info lock poisoned").clone()
+}
+
+fn allowed_external_url(url: &str) -> bool {
+  let Some((scheme, _)) = url.split_once(':') else {
+    return false;
+  };
+  let mut chars = scheme.chars();
+  if !chars.next().is_some_and(|character| character.is_ascii_alphabetic())
+    || !chars.all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.'))
+  {
+    return false;
+  }
+
+  !matches!(
+    scheme.to_ascii_lowercase().as_str(),
+    "about"
+      | "asset"
+      | "blob"
+      | "chrome"
+      | "chrome-extension"
+      | "data"
+      | "file"
+      | "ipc"
+      | "javascript"
+      | "tauri"
+      | "vbscript"
+  )
+}
+
+#[tauri::command]
+fn open_external_url(_app: tauri::AppHandle, url: String) -> Result<(), String> {
+  if !allowed_external_url(&url) {
+    return Err("Unsupported external URL scheme.".into());
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    let output = Command::new("/usr/bin/open").arg(url).output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+      return Ok(());
+    }
+    let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    return Err(if message.is_empty() { "No application can open this shortcut.".into() } else { message });
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  _app.opener().open_url(url, None::<&str>).map_err(|error| error.to_string())
 }
 
 #[cfg(desktop)]
@@ -166,12 +215,13 @@ pub fn run() {
   let builder = tauri::Builder::default()
     .manage(AppState::default())
     .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
     .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build());
   #[cfg(desktop)]
   let builder = builder.plugin(tauri_plugin_shell::init());
 
   let app = builder
-    .invoke_handler(tauri::generate_handler![native_info])
+    .invoke_handler(tauri::generate_handler![native_info, open_external_url])
     .setup(|_app| {
       #[cfg(desktop)]
       if let Err(error) = start_livetree(_app.handle()) {
@@ -186,8 +236,36 @@ pub fn run() {
     #[cfg(desktop)]
     if matches!(_event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
       if let Some(child) = _handle.state::<AppState>().child.lock().expect("child lock poisoned").take() {
-        let _ = child.kill();
+        // Give the Node service a graceful shutdown so it can stop its
+        // foreground Tailscale Serve child before this app exits.
+        let _ = Command::new("/bin/kill").args(["-TERM", &child.pid().to_string()]).status();
       }
     }
   });
+}
+
+#[cfg(test)]
+mod tests {
+  use super::allowed_external_url;
+
+  #[test]
+  fn allows_web_and_app_deep_links() {
+    assert!(allowed_external_url("https://example.com/path"));
+    assert!(allowed_external_url("my-app-development://open?url=https%3A%2F%2Fexample.com"));
+  }
+
+  #[test]
+  fn rejects_unsafe_or_malformed_urls() {
+    for url in [
+      "file:///tmp/private",
+      "javascript:alert(1)",
+      "data:text/html,bad",
+      "blob:https://example.com/id",
+      "missing-scheme.example.com",
+      "1invalid://example.com",
+      "invalid_scheme://example.com",
+    ] {
+      assert!(!allowed_external_url(url), "unexpectedly allowed {url}");
+    }
+  }
 }
