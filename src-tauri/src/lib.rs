@@ -24,10 +24,22 @@ use tauri_plugin_shell::{
   ShellExt,
 };
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum NativeServerMode {
+  Starting,
+  Background,
+  Bundled,
+  #[default]
+  Disconnected,
+  Error,
+}
+
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeInfo {
   platform: String,
+  server_mode: NativeServerMode,
   server_url: Option<String>,
   tailnet_url: Option<String>,
   error: Option<String>,
@@ -44,6 +56,7 @@ impl Default for AppState {
     Self {
       info: Mutex::new(NativeInfo {
         platform: if cfg!(target_os = "ios") { "ios" } else { "macos" }.into(),
+        server_mode: if cfg!(target_os = "ios") { NativeServerMode::Disconnected } else { NativeServerMode::Starting },
         ..NativeInfo::default()
       }),
       #[cfg(desktop)]
@@ -158,6 +171,9 @@ fn update_from_line(app: &tauri::AppHandle, line: &str, is_stderr: bool) {
   let mut info = state.info.lock().expect("native info lock poisoned");
   if let Some(url) = line.strip_prefix("Dashboard: ") {
     info.server_url = Some(url.trim().to_string());
+    if info.server_mode == NativeServerMode::Starting {
+      info.server_mode = NativeServerMode::Bundled;
+    }
     info.error = None;
   } else if let Some(url) = line.strip_prefix("Tailnet dashboard: ") {
     info.tailnet_url = Some(url.trim().to_string());
@@ -281,6 +297,7 @@ fn existing_background_livetree() -> Option<NativeInfo> {
   }
   Some(NativeInfo {
     platform: "macos".into(),
+    server_mode: NativeServerMode::Background,
     server_url: Some(info.local_url),
     tailnet_url: info.tailnet_url.filter(|url| allowed_desktop_url(url)),
     error: info.tailnet_error,
@@ -329,12 +346,16 @@ fn start_livetree(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Erro
           consume_trailing_line(&handle, &mut stderr, true);
           let state = handle.state::<AppState>();
           let mut info = state.info.lock().expect("native info lock poisoned");
-          if info.server_url.is_none() && info.error.is_none() {
-            let status = payload.code
-              .map(|code| format!("with exit code {code}"))
-              .unwrap_or_else(|| "after being terminated by macOS".to_string());
-            info.error = Some(format!("LiveTree service exited before starting {status}."));
-          }
+          let had_started = info.server_url.take().is_some();
+          info.tailnet_url = None;
+          info.server_mode = NativeServerMode::Error;
+          let status = payload.code
+            .map(|code| format!("with exit code {code}"))
+            .unwrap_or_else(|| "after being terminated by macOS".to_string());
+          info.error = Some(format!(
+            "LiveTree service exited {} {status}.",
+            if had_started { "unexpectedly" } else { "before starting" }
+          ));
         }
         _ => {}
       }
@@ -378,7 +399,10 @@ pub fn run() {
     .setup(|_app| {
       #[cfg(desktop)]
       if let Err(error) = start_livetree(_app.handle()) {
-        _app.state::<AppState>().info.lock().expect("native info lock poisoned").error = Some(error.to_string());
+        let state = _app.state::<AppState>();
+        let mut info = state.info.lock().expect("native info lock poisoned");
+        info.server_mode = NativeServerMode::Error;
+        info.error = Some(error.to_string());
       }
       Ok(())
     })
@@ -399,7 +423,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-  use super::{allowed_desktop_url, allowed_external_url};
+  use super::{allowed_desktop_url, allowed_external_url, NativeServerMode};
   #[cfg(desktop)]
   use super::{background_dashboard_is_healthy, local_dashboard_port};
   #[cfg(desktop)]
@@ -434,6 +458,15 @@ mod tests {
     assert!(!allowed_desktop_url("http://localhost.example.com"));
     assert!(!allowed_desktop_url("http://remote.example.com"));
     assert!(!allowed_desktop_url("https://"));
+  }
+
+  #[test]
+  fn serializes_native_server_modes_for_the_dashboard() {
+    assert_eq!(serde_json::to_string(&NativeServerMode::Starting).unwrap(), r#""starting""#);
+    assert_eq!(serde_json::to_string(&NativeServerMode::Background).unwrap(), r#""background""#);
+    assert_eq!(serde_json::to_string(&NativeServerMode::Bundled).unwrap(), r#""bundled""#);
+    assert_eq!(serde_json::to_string(&NativeServerMode::Disconnected).unwrap(), r#""disconnected""#);
+    assert_eq!(serde_json::to_string(&NativeServerMode::Error).unwrap(), r#""error""#);
   }
 
   #[cfg(desktop)]

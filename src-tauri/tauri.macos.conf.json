@@ -1,4 +1,19 @@
 {
+  "app": {
+    "windows": [
+      {
+        "title": "LiveTree",
+        "width": 1240,
+        "height": 780,
+        "minWidth": 360,
+        "minHeight": 500,
+        "resizable": true,
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ]
+  },
   "bundle": {
     "externalBin": ["binaries/livetree-node"],
     "resources": {

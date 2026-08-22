@@ -5,6 +5,7 @@ import {
 } from "lucide-solid";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { connectionStatus, createPaneBackSwipeRecognizer, type ServerMode } from "../../src/desktop-ui.js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -120,6 +121,20 @@ export default function App() {
     return project?.worktrees.find((worktree) => worktree.path === selectedPath()) ?? project?.worktrees[0];
   });
   const filteredWorktrees = createMemo(() => selectedProject()?.worktrees ?? []);
+  const activeConnectionStatus = createMemo(() => {
+    const info = nativeInfo();
+    if (!info) return undefined;
+    let serverMode: ServerMode = info.serverMode;
+    if (info.platform === "ios" && appReady()) {
+      serverMode = state() ? "tailscale" : error() ? "error" : "starting";
+    }
+    return connectionStatus({
+      platform: info.platform,
+      serverMode,
+      dashboardReady: Boolean(state()),
+      dashboardError: Boolean(error() && !state()),
+    });
+  });
 
   function runningCount(project: Project): number {
     return project.worktrees.flatMap((tree) => tree.scripts).filter((script) => script.running).length;
@@ -456,6 +471,7 @@ export default function App() {
       nativeTimer = window.setInterval(() => void refreshNative(), 1_000);
     }
     const mobileQuery = window.matchMedia("(max-width: 820px)");
+    const trackpadBackSwipe = createPaneBackSwipeRecognizer();
     if (mobileQuery.matches) {
       const initial = history.state?.livetreeMobileView;
       const view: MobileView = initial === "workspace" ? "workspace" : "worktrees";
@@ -504,6 +520,18 @@ export default function App() {
     const onPointerCancel = () => {
       backSwipe = undefined;
     };
+    const onWheel = (event: WheelEvent) => {
+      const canGoBack = Boolean(logs()) || (mobileQuery.matches && mobileView() === "workspace");
+      const dialogOpen = projectDialogOpen() || Boolean(projectToRemove()) || Boolean(worktreeToRemove());
+      if (nativeInfo()?.platform !== "macos" || !canGoBack || dialogOpen || event.ctrlKey || event.metaKey) {
+        trackpadBackSwipe.reset();
+        return;
+      }
+      if (!trackpadBackSwipe.update(event)) return;
+      event.preventDefault();
+      if (logs()) closeLogs();
+      else backMobile("worktrees");
+    };
     const onDocumentPointerDown = (event: PointerEvent) => {
       if (projectMenuOpen() && !projectPicker?.contains(event.target as Node)) setProjectMenuOpen(false);
     };
@@ -514,6 +542,7 @@ export default function App() {
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerCancel);
+    window.addEventListener("wheel", onWheel, { passive: false });
     document.addEventListener("pointerdown", onDocumentPointerDown);
     document.addEventListener("keydown", onDocumentKeyDown);
     onCleanup(() => {
@@ -523,6 +552,7 @@ export default function App() {
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("wheel", onWheel);
       document.removeEventListener("pointerdown", onDocumentPointerDown);
       document.removeEventListener("keydown", onDocumentKeyDown);
       stopListeningForAppLinks?.();
@@ -637,9 +667,11 @@ export default function App() {
         "app-shell--terminal-open": Boolean(logs()),
         "mobile-view--worktrees": mobileView() === "worktrees",
         "mobile-view--workspace": mobileView() === "workspace",
+        "app-shell--macos": nativeInfo()?.platform === "macos",
       }}
       style={`--worktree-width:${worktreeWidth()}px;--terminal-width:${terminalWidth()}px`}
     >
+      <Show when={nativeInfo()?.platform === "macos"}><div class="macos-titlebar-drag-region" data-tauri-drag-region /></Show>
       <aside class="worktree-rail">
         <header class="worktree-rail__header">
           <div class="project-picker" ref={projectPicker}>
@@ -721,21 +753,24 @@ export default function App() {
           <Show when={filteredWorktrees().length === 0}><div class="empty-filter">{selectedProject() ? "No matching worktrees" : "No worktrees"}</div></Show>
         </div>
         <div class="worktree-rail__footer">
-          <Show when={nativeInfo()?.platform === "ios" || serverDashboardReturn} fallback={
-            <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable Tailscale Link</button>}>
-              <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
-                <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy Tailscale Link</button>
-              </Match>
-              <Match when={state()?.tailnet.status === "starting" || isBusy("tailnet:start")}>
-                <span class="tailnet-status" title="Starting Tailscale Serve"><LoaderCircle class="spin" size={13} />Starting Tailscale Link</span>
-              </Match>
-              <Match when={state()?.tailnet.status === "unavailable"}>
-                <button type="button" class="tailnet-copy" title={state()?.tailnet.error ?? "Tailscale is unavailable"} disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Retry Tailscale Link</button>
-              </Match>
-            </Switch>
-          }>
-            <button type="button" class="tailnet-copy" onClick={changeDesktop}><Settings size={13} />Change desktop</button>
-          </Show>
+          <Show when={activeConnectionStatus()}>{(status) => <span class={`connection-mode connection-mode--${status().tone}`} title={status().title}><i />{status().label}</span>}</Show>
+          <div class="worktree-rail__footer-action">
+            <Show when={nativeInfo()?.platform === "ios" || serverDashboardReturn} fallback={
+              <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable Tailscale Link</button>}>
+                <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
+                  <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy Tailscale Link</button>
+                </Match>
+                <Match when={state()?.tailnet.status === "starting" || isBusy("tailnet:start")}>
+                  <span class="tailnet-status" title="Starting Tailscale Serve"><LoaderCircle class="spin" size={13} />Starting Tailscale Link</span>
+                </Match>
+                <Match when={state()?.tailnet.status === "unavailable"}>
+                  <button type="button" class="tailnet-copy" title={state()?.tailnet.error ?? "Tailscale is unavailable"} disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Retry Tailscale Link</button>
+                </Match>
+              </Switch>
+            }>
+              <button type="button" class="tailnet-copy" onClick={changeDesktop}><Settings size={13} />Change desktop</button>
+            </Show>
+          </div>
         </div>
         <div class="rail-resizer" role="separator" aria-label="Resize worktrees sidebar" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="440" aria-valuenow={worktreeWidth()} onPointerDown={beginWorktreeResize} />
       </aside>
@@ -877,6 +912,7 @@ function ConnectionSetup(props: { platform?: NativeInfo["platform"]; error?: str
 
   return (
     <main class="connection-setup">
+      <Show when={props.platform === "macos"}><div class="macos-titlebar-drag-region" data-tauri-drag-region /></Show>
       <div class="connection-setup__card">
         <span class="brand__mark"><TreePine size={28} /></span>
         <Show when={props.platform === "ios"} fallback={<div><h1>Starting LiveTree</h1><p>The Mac app is launching its embedded dashboard service.</p></div>}>
