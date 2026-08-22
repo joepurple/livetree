@@ -182,6 +182,8 @@ links:
 
 Start the `dashboard` server and its tunnel before opening the link. The iOS app validates and saves the received HTTPS URL, then uses it as the active remote connection.
 
+After validating that URL as a compatible LiveTree server, iOS loads the dashboard HTML, JavaScript, and CSS directly from the connected server. Dashboard assets are served without caching, and an open dashboard reloads automatically when the server's build fingerprint changes. This keeps mobile UI changes in step with the Mac-side LiveTree build without reinstalling the iOS app. The packaged dashboard remains the connection screen and offline fallback; it also remains active when connected to an older server that does not advertise mobile-dashboard support. Remote dashboard pages do not receive access to Tauri's native command bridge.
+
 Initialize the generated Xcode project once, then develop or build it with Tauri:
 
 ```sh

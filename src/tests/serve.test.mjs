@@ -48,14 +48,19 @@ test("serves dashboard HTML and JSON on loopback", async (t) => {
   assert.equal(html.status, 200);
   const source = await html.text();
   assert.match(source, /<title>livetree<\/title>/);
+  assert.equal(html.headers.get("cache-control"), "no-store");
+  const dashboardVersion = /<meta name="livetree-dashboard-version" content="([a-f0-9]{16})" \/>/.exec(source)?.[1];
+  assert.ok(dashboardVersion);
   const assetPath = /<script type="module" crossorigin src="([^"]+)"/.exec(source)?.[1];
   assert.ok(assetPath);
   const asset = await fetch(new URL(assetPath, url));
   assert.equal(asset.status, 200);
   assert.match(asset.headers.get("content-type"), /javascript/);
+  assert.equal(asset.headers.get("cache-control"), "no-store");
   const state = await fetch(`${url}api/state`);
   assert.equal(state.status, 200);
   const json = await state.json();
+  assert.equal(json.dashboardVersion, dashboardVersion);
   assert.deepEqual(json.tailnet, { status: "disabled", url: null, error: null });
   assert.deepEqual(json.projects.map((project) => project.name), ["demo", "second"]);
   assert.equal(json.projects[0].id, repo);
@@ -287,7 +292,13 @@ test("starts the dashboard in the background and reports its dynamic URL", async
   assert.equal((await state.json()).projects[0].name, "background");
   assert.equal((await (await fetch(`${url}api/state`)).json()).tailnet.status, "unavailable");
   const health = await fetch(`${url}api/health`);
-  assert.deepEqual(await health.json(), { ok: true, service: "livetree", pid });
+  const healthJson = await health.json();
+  assert.equal(healthJson.ok, true);
+  assert.equal(healthJson.service, "livetree");
+  assert.equal(healthJson.pid, pid);
+  assert.match(healthJson.dashboard.version, /^[a-f0-9]{16}$/);
+  assert.equal(healthJson.dashboard.mobileClient, true);
+  assert.equal(healthJson.dashboard.protocolVersion, 1);
   const stopped = spawnSync(process.execPath, [cliPath, "server", "stop"], {
     cwd: repo,
     env: { ...process.env, LIVETREE_HOME: livetreeHome },

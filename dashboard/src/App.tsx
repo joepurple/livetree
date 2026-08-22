@@ -10,7 +10,7 @@ import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
 import { desktopUrlFromMobileAppLink } from "../../src/mobile-link";
-import { apiUrl, clearPersistedDesktopUrl, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
+import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, clearPersistedDesktopUrl, connectedDashboardReturnUrl, loadServerDashboard, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "worktrees" | "workspace";
@@ -74,6 +74,10 @@ export default function App() {
   let nativeTimer: number | undefined;
   let stopListeningForAppLinks: (() => void) | undefined;
   let dashboardStarted = false;
+  let connectedDesktopUrl: string | undefined;
+  let serverDashboardAttempt: Promise<boolean> | undefined;
+  const serverDashboardReturn = connectedDashboardReturnUrl();
+  const loadedDashboardVersion = document.querySelector<HTMLMetaElement>('meta[name="livetree-dashboard-version"]')?.content;
   const [state, setState] = createSignal<DashboardState>();
   const [selectedProjectId, setSelectedProjectIdSignal] = createSignal<string | undefined>(storedString("livetree.selectedProjectId"));
   const [selectedPath, setSelectedPath] = createSignal<string>();
@@ -162,6 +166,10 @@ export default function App() {
       const response = await fetch(apiUrl("state"), { cache: "no-store" });
       const payload = (await response.json()) as DashboardState & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Unable to load livetree");
+      if (loadedDashboardVersion && payload.dashboardVersion && /^[a-f0-9]{16}$/.test(payload.dashboardVersion) && payload.dashboardVersion !== loadedDashboardVersion) {
+        window.location.reload();
+        return;
+      }
       setState(payload);
       const project = payload.projects.find((candidate) => candidate.id === selectedProjectId()) ?? payload.projects[0];
       setSelectedProjectId(project?.id);
@@ -169,6 +177,7 @@ export default function App() {
         setSelectedPath(project?.worktrees[0]?.path);
       }
       setError(undefined);
+      if (connectedDesktopUrl) tryServerDashboard(connectedDesktopUrl);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -186,7 +195,12 @@ export default function App() {
   function connectToDesktop(value: string): void {
     const normalized = normalizeDesktopUrl(value);
     window.localStorage.setItem("livetree.desktopUrl", normalized);
-    if (runningInTauri()) void persistDesktopUrl(normalized).catch((caught) => console.error("Unable to save desktop URL", caught));
+    connectedDesktopUrl = normalized;
+    if (runningInTauri()) {
+      void persistDesktopUrl(normalized)
+        .then(() => tryServerDashboard(normalized))
+        .catch((caught) => console.error("Unable to save desktop URL", caught));
+    }
     setApiBase(normalized);
     setState(undefined);
     setError(undefined);
@@ -209,15 +223,33 @@ export default function App() {
     }
   }
 
-  function changeDesktop(): void {
+  function tryServerDashboard(value: string): void {
+    if (serverDashboardAttempt || nativeInfo()?.platform !== "ios" || serverDashboardReturn) return;
+    const attempt = loadServerDashboard(value).catch(() => false);
+    serverDashboardAttempt = attempt;
+    void attempt.finally(() => {
+      if (serverDashboardAttempt === attempt) serverDashboardAttempt = undefined;
+    });
+  }
+
+  function resetDesktopConnection(): void {
     window.localStorage.removeItem("livetree.desktopUrl");
     if (runningInTauri()) void clearPersistedDesktopUrl().catch((caught) => console.error("Unable to clear desktop URL", caught));
+    connectedDesktopUrl = undefined;
     setApiBase(undefined);
     setState(undefined);
     setError(undefined);
     setAppReady(false);
     dashboardStarted = false;
     window.clearInterval(refreshTimer);
+  }
+
+  function changeDesktop(): void {
+    if (serverDashboardReturn) {
+      window.location.replace(serverDashboardReturn);
+      return;
+    }
+    resetDesktopConnection();
   }
 
   async function action(kind: string, project: Project, worktree: Worktree, script: Script): Promise<void> {
@@ -391,6 +423,11 @@ export default function App() {
   }
 
   onMount(() => {
+    const settingsRequested = runningInTauri() && bundledSettingsRequested();
+    if (settingsRequested) {
+      clearBundledSettingsRequest();
+      resetDesktopConnection();
+    }
     if (!runningInTauri()) {
       startDashboard();
     } else {
@@ -407,7 +444,7 @@ export default function App() {
             setAppReady(true);
             startDashboard();
           }
-          if (info.platform === "ios" && !appReady()) {
+          if (info.platform === "ios" && !appReady() && !settingsRequested) {
             const stored = await readPersistedDesktopUrl().catch(() => null) ?? window.localStorage.getItem("livetree.desktopUrl");
             if (stored) connectToDesktop(stored);
           }
@@ -684,7 +721,7 @@ export default function App() {
           <Show when={filteredWorktrees().length === 0}><div class="empty-filter">{selectedProject() ? "No matching worktrees" : "No worktrees"}</div></Show>
         </div>
         <div class="worktree-rail__footer">
-          <Show when={nativeInfo()?.platform === "ios"} fallback={
+          <Show when={nativeInfo()?.platform === "ios" || serverDashboardReturn} fallback={
             <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable Tailscale Link</button>}>
               <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
                 <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy Tailscale Link</button>
@@ -714,7 +751,7 @@ export default function App() {
             <Button size="icon" variant="ghost" aria-label="Expand worktrees sidebar" onClick={toggleWorktreeRail}><PanelLeftOpen size={16} /></Button>
           </div>
         </Show>
-        <Show when={error()}>{(message) => <div class="error-banner" role="alert"><strong>Something went wrong</strong><span>{message()}</span><Show when={nativeInfo()?.platform === "ios"}><Button size="sm" variant="outline" onClick={changeDesktop}>Change server</Button></Show><Button size="sm" onClick={() => void load(true)}>Try again</Button></div>}</Show>
+        <Show when={error()}>{(message) => <div class="error-banner" role="alert"><strong>Something went wrong</strong><span>{message()}</span><Show when={nativeInfo()?.platform === "ios" || serverDashboardReturn}><Button size="sm" variant="outline" onClick={changeDesktop}>Change server</Button></Show><Button size="sm" onClick={() => void load(true)}>Try again</Button></div>}</Show>
         <Show when={selectedProject()} fallback={
           <Show when={state()} fallback={<LoadingState />}>
             <div class="empty-projects-state">

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, createReadStream, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -29,6 +30,7 @@ import type { LtConfig, ProjectContext, WorktreeChoice } from "../types.js";
 import { buildProjectContext, worktreesModifiedNewestFirst } from "../worktrees.js";
 import { startDevProcess } from "./dev.js";
 import { ensureTunnelForScript } from "./tunnel.js";
+import { MOBILE_DASHBOARD_PROTOCOL_VERSION } from "../dashboard-client.js";
 
 const DEFAULT_PORT = 43117;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -515,7 +517,16 @@ async function handleRequest(
     } else if (request.method === "GET" && route === "/api/state") {
       sendJson(response, 200, await dashboardState(originalContext, tailnet.state));
     } else if (request.method === "GET" && route === "/api/health") {
-      sendJson(response, 200, { ok: true, service: "livetree", pid: process.pid });
+      sendJson(response, 200, {
+        ok: true,
+        service: "livetree",
+        pid: process.pid,
+        dashboard: {
+          version: dashboardVersion(),
+          mobileClient: true,
+          protocolVersion: MOBILE_DASHBOARD_PROTOCOL_VERSION,
+        },
+      });
     } else if (request.method === "GET" && route === "/api/logs") {
       streamServerLogs(originalContext, requestUrl, request, response);
     } else if (request.method === "POST" && route === "/api/tailnet/start") {
@@ -609,7 +620,7 @@ function streamServerLogs(
 
 async function dashboardState(originalContext: ProjectContext | null, tailnet: DashboardTailnetState): Promise<object> {
   const projects = await Promise.all(dashboardProjects(originalContext).map(dashboardProjectState));
-  return { generatedAtMs: Date.now(), tailnet, projects };
+  return { generatedAtMs: Date.now(), dashboardVersion: dashboardVersion(), tailnet, projects };
 }
 
 async function dashboardProjectState(project: DashboardProject): Promise<object> {
@@ -833,6 +844,11 @@ function sendDashboardAsset(response: ServerResponse, relativePath: string): voi
     return;
   }
 
+  if (relativePath === "index.html") {
+    sendDashboardIndex(response, filePath);
+    return;
+  }
+
   let size: number;
   try {
     size = statSync(filePath).size;
@@ -853,6 +869,38 @@ function sendDashboardAsset(response: ServerResponse, relativePath: string): voi
     "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
   });
   createReadStream(filePath).pipe(response);
+}
+
+function dashboardVersion(): string {
+  const dashboardRoot = path.resolve(fileURLToPath(new URL("../dashboard/", import.meta.url)));
+  try {
+    return hashDashboardIndex(readFileSync(path.join(dashboardRoot, "index.html")));
+  } catch {
+    return "unavailable";
+  }
+}
+
+function sendDashboardIndex(response: ServerResponse, filePath: string): void {
+  let body: string;
+  try {
+    body = readFileSync(filePath, "utf8");
+  } catch {
+    sendJson(response, 404, { error: "Dashboard asset not found. Run 'npm run build'." });
+    return;
+  }
+  const meta = `<meta name="livetree-dashboard-version" content="${hashDashboardIndex(body)}" />`;
+  body = body.replace("</head>", `    ${meta}\n  </head>`);
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+  });
+  response.end(body);
+}
+
+function hashDashboardIndex(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
 function waitForShutdown(

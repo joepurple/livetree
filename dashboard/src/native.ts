@@ -1,6 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-export { normalizeDesktopUrl } from "../../src/mobile-link";
+import { BUNDLED_SETTINGS_PARAM, mobileDashboardReturnUrl, mobileDashboardUrl, requestsBundledSettings, supportsMobileDashboard } from "../../src/dashboard-client";
+import { normalizeDesktopUrl } from "../../src/mobile-link";
+
+export { normalizeDesktopUrl };
 
 export type NativeInfo = {
   platform: "macos" | "ios";
@@ -12,7 +15,31 @@ export type NativeInfo = {
 let apiBase: string | undefined;
 
 export function runningInTauri(): boolean {
-  return isTauri();
+  if (!isTauri()) return false;
+  if (import.meta.env.DEV) return true;
+  return window.location.protocol === "tauri:" || window.location.hostname === "tauri.localhost";
+}
+
+export function connectedDashboardReturnUrl(): URL | null {
+  return mobileDashboardReturnUrl(window.location.href);
+}
+
+export function bundledSettingsRequested(): boolean {
+  return requestsBundledSettings(window.location.href);
+}
+
+export function clearBundledSettingsRequest(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(BUNDLED_SETTINGS_PARAM);
+  window.history.replaceState(window.history.state, "", url);
+}
+
+export async function loadServerDashboard(value: string): Promise<boolean> {
+  const normalized = normalizeDesktopUrl(value);
+  const response = await fetch(new URL("api/health", `${normalized}/`), { cache: "no-store" });
+  if (!response.ok || !supportsMobileDashboard(await response.json())) return false;
+  window.location.replace(mobileDashboardUrl(normalized, window.location.href));
+  return true;
 }
 
 export async function readNativeInfo(): Promise<NativeInfo> {

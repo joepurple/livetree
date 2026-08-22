@@ -43,6 +43,7 @@ export type Project = {
 
 export type DashboardState = {
   generatedAtMs: number;
+  dashboardVersion?: string;
   tailnet: {
     status: "disabled" | "starting" | "ready" | "unavailable";
     url: string | null;
