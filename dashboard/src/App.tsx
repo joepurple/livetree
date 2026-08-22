@@ -3,11 +3,13 @@ import {
   LoaderCircle, PanelLeftClose, PanelLeftOpen, Play, Plus, RadioTower, RefreshCw,
   MonitorSmartphone, Server, Settings, Square, Terminal as TerminalIcon, Trash2, TreePine, TriangleAlert, Wifi, X,
 } from "lucide-solid";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
+import { desktopUrlFromMobileAppLink } from "../../src/mobile-link";
 import { apiUrl, clearPersistedDesktopUrl, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
@@ -70,6 +72,7 @@ export default function App() {
   let dashboardScrollY = 0;
   let refreshTimer: number | undefined;
   let nativeTimer: number | undefined;
+  let stopListeningForAppLinks: (() => void) | undefined;
   let dashboardStarted = false;
   const [state, setState] = createSignal<DashboardState>();
   const [selectedProjectId, setSelectedProjectIdSignal] = createSignal<string | undefined>(storedString("livetree.selectedProjectId"));
@@ -188,7 +191,22 @@ export default function App() {
     setState(undefined);
     setError(undefined);
     setAppReady(true);
-    startDashboard();
+    if (dashboardStarted) void load(true);
+    else startDashboard();
+  }
+
+  function openMobileAppLinks(urls: string[]): void {
+    for (const url of urls) {
+      try {
+        const desktopUrl = desktopUrlFromMobileAppLink(url);
+        if (!desktopUrl) continue;
+        connectToDesktop(desktopUrl);
+        return;
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        return;
+      }
+    }
   }
 
   function changeDesktop(): void {
@@ -376,6 +394,10 @@ export default function App() {
     if (!runningInTauri()) {
       startDashboard();
     } else {
+      void (async () => {
+        stopListeningForAppLinks = await onOpenUrl(openMobileAppLinks);
+        openMobileAppLinks((await getCurrent()) ?? []);
+      })().catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
       const refreshNative = async () => {
         try {
           const info = await readNativeInfo();
@@ -466,6 +488,7 @@ export default function App() {
       window.removeEventListener("pointercancel", onPointerCancel);
       document.removeEventListener("pointerdown", onDocumentPointerDown);
       document.removeEventListener("keydown", onDocumentKeyDown);
+      stopListeningForAppLinks?.();
       for (const timer of toastTimers.values()) window.clearTimeout(timer);
       toastTimers.clear();
     });

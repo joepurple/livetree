@@ -366,6 +366,7 @@ fn consume_lines(app: &tauri::AppHandle, buffer: &mut String, bytes: &[u8], is_s
 pub fn run() {
   let builder = tauri::Builder::default()
     .manage(AppState::default())
+    .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
     .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build());

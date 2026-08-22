@@ -10,3 +10,4 @@ dev:
 
 links:
   dashboard: ${url:dashboard}
+  mobile: livetree://connect?url=${enc:tunnelUrl:dashboard}

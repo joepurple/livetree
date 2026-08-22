@@ -53,6 +53,9 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.2.0
         CFBundleVersion: "0.2.0"
+        CFBundleURLTypes:
+          - CFBundleURLName: app.livetree.dashboard
+            CFBundleURLSchemes: [livetree]
     entitlements:
       path: livetree-app_iOS/livetree-app_iOS.entitlements
     scheme:

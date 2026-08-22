@@ -173,6 +173,15 @@ The outputs are written below `src-tauri/target/release/bundle/`. The current si
 
 The iOS app is a client only. On first launch it asks for the **Tailnet dashboard URL** displayed in the Mac app. Install Tailscale on the iPhone, sign into an authorized account on the same tailnet, then paste that HTTPS URL. The value is kept on-device and can be changed from the project screen.
 
+The app also accepts `livetree://connect?url=<encoded-url>` shortcuts. A configured `.ltconf` link can open the current worktree's Tailscale-served dashboard directly in the app:
+
+```yaml
+links:
+  mobile: livetree://connect?url=${enc:tunnelUrl:dashboard}
+```
+
+Start the `dashboard` server and its tunnel before opening the link. The iOS app validates and saves the received HTTPS URL, then uses it as the active remote connection.
+
 Initialize the generated Xcode project once, then develop or build it with Tauri:
 
 ```sh
