@@ -66,6 +66,8 @@ dev:
       ECOS_API_BASE: ${tunnelUrl:api}
   metro:
     cmd: pnpm --dir modules/mobile start
+    portArg: --port
+    tunnelPort: app
     env:
       EXPO_PUBLIC_BASE_URL_LOCAL: ${url:api}
 
@@ -119,6 +121,8 @@ livetree tunnel api
 ```
 
 Livetree allocates a Tailscale HTTPS port, starts `tailscale serve`, and waits for the tailnet URL to respond before reporting it ready. The URL uses this Mac's stable MagicDNS name. It is not exposed to the public internet.
+
+Some development servers include their listening port in URLs they generate. Expo Metro does this for the bundle URL in a development manifest. Set `tunnelPort: app` for those scripts so the Tailscale HTTPS port matches the dynamically allocated application port. The application port remains unprivileged; Livetree reports a conflict instead of silently choosing a different tunnel port.
 
 If a script's `tunnelEnv` references another script, Livetree ensures that dependency tunnel first. Dashboard-managed servers are restarted automatically with the resolved tunnel environment. A foreground server cannot be restarted behind its terminal, so Livetree stops and tells you which `livetree dev` command to rerun.
 

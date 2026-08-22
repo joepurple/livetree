@@ -38,6 +38,7 @@ export type DevScript = {
   env: Record<string, string>;
   tunnelEnv: Record<string, string>;
   portArg: string | null;
+  tunnelPort: "auto" | "app";
 };
 
 export type LtConfig = {

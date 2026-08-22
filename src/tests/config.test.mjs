@@ -21,6 +21,7 @@ dev:
     env: { API_BASE: "\${url:api}" }
     tunnelEnv: { API_BASE: "\${tunnelUrl:api}" }
     portArg: --port
+    tunnelPort: app
 links:
   device: "app://open?url=\${enc:tunnelUrl:web}"
 `), {
@@ -29,10 +30,10 @@ links:
     initScript: "pnpm install",
     copyFiles: [path.join("modules", "api", ".env"), "123"],
     devScripts: {
-      api: { name: "api", cmd: "pnpm api", env: {}, tunnelEnv: {}, portArg: null },
+      api: { name: "api", cmd: "pnpm api", env: {}, tunnelEnv: {}, portArg: null, tunnelPort: "auto" },
       web: {
         name: "web", cmd: "pnpm web", env: { API_BASE: "${url:api}" },
-        tunnelEnv: { API_BASE: "${tunnelUrl:api}" }, portArg: "--port",
+        tunnelEnv: { API_BASE: "${tunnelUrl:api}" }, portArg: "--port", tunnelPort: "app",
       },
     },
     links: { device: "app://open?url=${enc:tunnelUrl:web}" },
@@ -55,5 +56,6 @@ test("rejects v1, unsafe paths, invalid env, and malformed definitions", () => {
   assert.throws(() => parse("dev:\n  bad name: npm start\n"), /Dev script names/);
   assert.throws(() => parse("dev:\n  web:\n    cmd: npm start\n    env:\n      A=B: nope\n"), /invalid environment variable/);
   assert.throws(() => parse("dev:\n  web:\n    cmd: ''\n"), /non-empty 'cmd'/);
+  assert.throws(() => parse("dev:\n  web:\n    cmd: npm start\n    tunnelPort: 8443\n"), /tunnelPort must be 'auto' or 'app'/);
   assert.throws(() => parse("["), CliError);
 });

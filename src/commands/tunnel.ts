@@ -7,7 +7,7 @@ import { templateTokens } from "../interpolate.js";
 import { portlessName } from "../naming.js";
 import { probeAppReachable, proxyInfo, registeredAppPort } from "../portless.js";
 import type { ProxyInfo } from "../portless.js";
-import { stopProcessGroupAndWait } from "../processes.js";
+import { killProcessGroup, stopProcessGroupAndWait } from "../processes.js";
 import { clearTunnelEnvPending, markTunnelEnvPending, readServerEntry, readTunnelEntries, readTunnelEntry, removeServerEntry, removeTunnelEntry, tunnelLogPath, writeTunnelEntry } from "../registry.js";
 import { nextTailscaleServePort, readTailscaleInfo, startTailscaleServe, tailscaleUrl, usedTailscaleServePorts, waitForTailscaleServe } from "../tailscale.js";
 import type { TailscaleInfo } from "../tailscale.js";
@@ -122,7 +122,7 @@ export async function ensureTunnelForScript(
     return existing;
   }
 
-  const entry = await openTunnel(context, worktree, scriptName, name, options);
+  const entry = await openTunnel(context, worktree, scriptName, name, script.tunnelPort, options);
   options.log(`Tunnel ready: ${scriptName} → ${entry.url}`);
   return entry;
 }
@@ -167,6 +167,7 @@ async function openTunnel(
   worktree: WorktreeRecord,
   scriptName: string,
   name: string,
+  tunnelPort: "auto" | "app",
   options: EnsureTunnelOptions,
 ): Promise<TunnelEntry> {
   if (!(await probeAppReachable(name, options.proxy, 3_000))) {
@@ -190,15 +191,22 @@ async function openTunnel(
     if (tunnel.httpsPort) usedPorts.add(tunnel.httpsPort);
   }
 
+  if (tunnelPort === "app" && usedPorts.has(localPort)) {
+    throw new CliError(
+      `Cannot share '${scriptName}' on HTTPS port ${localPort} because that Tailscale Serve port is already in use.`,
+    );
+  }
+
   let lastError: unknown;
-  for (let attempt = 1; attempt <= MAX_SERVE_PORT_ATTEMPTS; attempt += 1) {
-    const httpsPort = nextTailscaleServePort(usedPorts);
+  const maxAttempts = tunnelPort === "app" ? 1 : MAX_SERVE_PORT_ATTEMPTS;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const httpsPort = tunnelPort === "app" ? localPort : nextTailscaleServePort(usedPorts);
     usedPorts.add(httpsPort);
     try {
       return await openTailscaleServe(context, worktree, scriptName, name, localPort, httpsPort, options, logPath);
     } catch (error) {
       lastError = error;
-      if (attempt >= MAX_SERVE_PORT_ATTEMPTS || !/already in use|port conflict|address already/i.test(String(error))) throw error;
+      if (attempt >= maxAttempts || !/already in use|port conflict|address already/i.test(String(error))) throw error;
       options.log(`Tailscale HTTPS port ${httpsPort} was busy; trying another port...`);
     }
   }
@@ -279,11 +287,7 @@ function waitForForegroundTunnels(context: ProjectContext, created: CreatedTunne
     const onSignal = (): void => {
       console.error("\nStopping tunnels...");
       for (const tunnel of created) {
-        try {
-          process.kill(tunnel.entry.pid, "SIGTERM");
-        } catch {
-          // Already exited.
-        }
+        killProcessGroup(tunnel.entry.pid, "SIGTERM");
       }
     };
 

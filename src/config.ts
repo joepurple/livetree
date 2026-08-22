@@ -135,7 +135,7 @@ function parseDevSection(value: unknown): Record<string, DevScript> {
 function parseDevScript(name: string, definition: unknown): DevScript {
   const shorthandCmd = yamlScalarString(definition);
   if (shorthandCmd) {
-    return { name, cmd: shorthandCmd, env: {}, tunnelEnv: {}, portArg: null };
+    return { name, cmd: shorthandCmd, env: {}, tunnelEnv: {}, portArg: null, tunnelPort: "auto" };
   }
 
   if (!isYamlRecord(definition)) {
@@ -143,8 +143,8 @@ function parseDevScript(name: string, definition: unknown): DevScript {
   }
 
   for (const key of Object.keys(definition)) {
-    if (!["cmd", "env", "tunnelEnv", "portArg"].includes(key)) {
-      throw new CliError(`Unknown key '${key}' in dev script '${name}'. Supported keys: cmd, env, tunnelEnv, portArg.`);
+    if (!["cmd", "env", "tunnelEnv", "portArg", "tunnelPort"].includes(key)) {
+      throw new CliError(`Unknown key '${key}' in dev script '${name}'. Supported keys: cmd, env, tunnelEnv, portArg, tunnelPort.`);
     }
   }
 
@@ -159,7 +159,15 @@ function parseDevScript(name: string, definition: unknown): DevScript {
     env: parseEnvMap(name, definition.env),
     tunnelEnv: parseEnvMap(name, definition.tunnelEnv, "tunnelEnv"),
     portArg: yamlScalarString(definition.portArg),
+    tunnelPort: parseTunnelPort(name, definition.tunnelPort),
   };
+}
+
+function parseTunnelPort(scriptName: string, value: unknown): DevScript["tunnelPort"] {
+  if (value === undefined || value === null) return "auto";
+  const tunnelPort = yamlScalarString(value);
+  if (tunnelPort === "auto" || tunnelPort === "app") return tunnelPort;
+  throw new CliError(`Dev script '${scriptName}' tunnelPort must be 'auto' or 'app'.`);
 }
 
 function parseEnvMap(scriptName: string, value: unknown, field = "env"): Record<string, string> {

@@ -40,6 +40,11 @@ export function resolveTailscaleCli(env: NodeJS.ProcessEnv = process.env): strin
     .split(path.delimiter)
     .filter(Boolean)
     .map((directory) => path.join(directory, "tailscale"));
+  if (process.platform === "darwin") {
+    // The macOS CLI shim launches the app binary and exits immediately. Spawn
+    // the app binary itself so its PID and foreground Serve lifecycle stay owned.
+    candidates.unshift("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
+  }
   candidates.push("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale");
   const match = candidates.find(isExecutable);
   if (match) return match;
