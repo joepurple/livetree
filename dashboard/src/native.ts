@@ -22,6 +22,10 @@ export function runningInTauri(): boolean {
   return window.location.protocol === "tauri:" || window.location.hostname === "tauri.localhost";
 }
 
+export function nativeLinkOpenerAvailable(): boolean {
+  return isTauri();
+}
+
 export function connectedDashboardReturnUrl(): URL | null {
   return mobileDashboardReturnUrl(window.location.href);
 }

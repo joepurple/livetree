@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { connectionStatus, createPaneBackSwipeRecognizer } from "../../dist/desktop-ui.js";
+import { connectionStatus, createPaneBackSwipeRecognizer, shouldUseSameViewLink } from "../../dist/desktop-ui.js";
 
 test("labels each desktop server mode without inferring it from the URL", () => {
   assert.equal(connectionStatus({ platform: "macos", serverMode: "background", dashboardReady: true, dashboardError: false }).label, "Background server");
@@ -15,6 +15,12 @@ test("reports remote mobile dashboards as Tailscale connections", () => {
     { label: "Tailscale server", title: "Connected to a LiveTree server over Tailscale", tone: "active" },
   );
   assert.equal(connectionStatus({ platform: "ios", serverMode: "disconnected", dashboardReady: false, dashboardError: false }).label, "No server");
+});
+
+test("uses current-view navigation only for mobile pages without a native bridge", () => {
+  assert.equal(shouldUseSameViewLink({ nativeBridge: false, mobileViewport: true }), true);
+  assert.equal(shouldUseSameViewLink({ nativeBridge: false, mobileViewport: false }), false);
+  assert.equal(shouldUseSameViewLink({ nativeBridge: true, mobileViewport: true }), false);
 });
 
 test("recognizes one deliberate trackpad back swipe per gesture", () => {

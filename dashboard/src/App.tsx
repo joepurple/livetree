@@ -5,13 +5,13 @@ import {
 } from "lucide-solid";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { connectionStatus, createPaneBackSwipeRecognizer, type ServerMode } from "../../src/desktop-ui.js";
+import { connectionStatus, createPaneBackSwipeRecognizer, shouldUseSameViewLink, type ServerMode } from "../../src/desktop-ui.js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
 import { desktopUrlFromMobileAppLink } from "../../src/mobile-link";
-import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, clearPersistedDesktopUrl, connectedDashboardReturnUrl, loadServerDashboard, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
+import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, clearPersistedDesktopUrl, connectedDashboardReturnUrl, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "worktrees" | "workspace";
@@ -46,9 +46,15 @@ function branchTitle(worktree: Worktree): string {
 }
 
 function openExternalLink(event: MouseEvent, url: string): void {
-  if (!runningInTauri()) return;
+  const nativeBridge = nativeLinkOpenerAvailable();
+  if (nativeBridge) {
+    event.preventDefault();
+    void openExternalUrl(url).catch((error) => console.error(`Unable to open ${url}`, error));
+    return;
+  }
+  if (!shouldUseSameViewLink({ nativeBridge, mobileViewport: window.matchMedia("(max-width: 820px)").matches })) return;
   event.preventDefault();
-  void openExternalUrl(url).catch((error) => console.error(`Unable to open ${url}`, error));
+  window.location.assign(url);
 }
 
 function storedBoolean(key: string): boolean {
@@ -972,7 +978,14 @@ function WorktreeView(props: {
   onCleanup(() => window.clearTimeout(copiedTimer));
 
   async function openShortcut(event: MouseEvent, link: Link): Promise<void> {
-    if (!runningInTauri() || !link.url) return;
+    if (!link.url) return;
+    const nativeBridge = nativeLinkOpenerAvailable();
+    if (!nativeBridge) {
+      if (!shouldUseSameViewLink({ nativeBridge, mobileViewport: window.matchMedia("(max-width: 820px)").matches })) return;
+      event.preventDefault();
+      window.location.assign(link.url);
+      return;
+    }
     event.preventDefault();
     setShortcutError(undefined);
     try {
@@ -1022,27 +1035,27 @@ function WorktreeView(props: {
             {(script) => (
               <Card class="server-card">
                 <div class="server-card__identity">
-                  <span class="server-icon" classList={{ "server-icon--running": script.running }}><Server size={18} /></span>
                   <div>
                     <div class="server-name">
-                      <a href={script.url} target="_blank" rel="noreferrer" title={script.url} onClick={(event) => openExternalLink(event, script.url)}><span>{script.script}</span><ArrowUpRight size={13} /></a>
-                      <Show when={script.tunnelUrl}><a class="server-tunnel-link" href={script.tunnelUrl!} target="_blank" rel="noreferrer" title={script.tunnelUrl!} aria-label={`Open ${script.script} Tailscale URL`} onClick={(event) => openExternalLink(event, script.tunnelUrl!)}><Wifi size={13} /></a></Show>
+                      <strong>{script.script}</strong>
                       <Badge tone={script.healthy ? "success" : script.running ? "warning" : "neutral"}>{script.healthy ? "healthy" : script.running ? "starting" : "stopped"}</Badge>
                     </div>
                     <span class="server-meta">{script.running ? `PID ${script.pid} · up ${age(script.startedAtMs)}` : "Ready to start"}</span>
                   </div>
                 </div>
+                <a class="server-primary-link" href={script.url} target="_blank" rel="noreferrer" aria-label={`Open ${script.script}`} onClick={(event) => openExternalLink(event, script.url)}><ArrowUpRight size={16} /></a>
+                <Show when={script.tunnelUrl}><a class="server-tunnel-link" href={script.tunnelUrl!} target="_blank" rel="noreferrer" aria-label={`Open ${script.script} via Tailnet`} onClick={(event) => openExternalLink(event, script.tunnelUrl!)}><Wifi size={16} /></a></Show>
                 <div class="server-card__actions">
-                  <Button size="icon" variant={script.running ? "danger" : "primary"} aria-label={`${script.running ? "Stop" : "Start"} ${script.script}`} title={script.running ? "Stop" : "Start"} disabled={isScriptBusy(script)} onClick={() => void props.onAction(`dev/${script.running ? "stop" : "start"}`, props.worktree, script)}>
+                  <Button size="icon" variant={script.running ? "danger" : "primary"} aria-label={`${script.running ? "Stop" : "Start"} ${script.script}`} disabled={isScriptBusy(script)} onClick={() => void props.onAction(`dev/${script.running ? "stop" : "start"}`, props.worktree, script)}>
                     {isBusy(`dev/${script.running ? "stop" : "start"}`, script) ? <LoaderCircle class="spin" size={15} /> : script.running ? <Square size={13} /> : <Play size={14} />}
                   </Button>
                   <Show when={script.running}>
-                    <Button size="icon" variant="outline" aria-label={`${script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} for ${script.script}`} title={script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} data-tooltip={script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} disabled={isScriptBusy(script)} onClick={() => void props.onAction(`tunnel/${script.tunnelUrl ? "stop" : "start"}`, props.worktree, script)}>
+                    <Button size="icon" variant="outline" aria-label={`${script.tunnelUrl ? "Stop Tailscale" : "Start Tailscale"} for ${script.script}`} disabled={isScriptBusy(script)} onClick={() => void props.onAction(`tunnel/${script.tunnelUrl ? "stop" : "start"}`, props.worktree, script)}>
                       {isBusy(`tunnel/${script.tunnelUrl ? "stop" : "start"}`, script) ? <LoaderCircle class="spin" size={15} /> : <RadioTower size={15} />}
                     </Button>
                   </Show>
                 </div>
-                <button type="button" class="server-card__logs" disabled={!script.running || !script.logPath} aria-label={script.running && script.logPath ? `Open ${script.script} logs in side pane` : `${script.script} logs unavailable`} title={script.running && script.logPath ? "Open logs" : "Logs unavailable"} onClick={() => props.onLogs(script)}><TerminalIcon size={15} /></button>
+                <button type="button" class="server-card__logs" disabled={!script.running || !script.logPath} aria-label={script.running && script.logPath ? `Open ${script.script} logs in side pane` : `${script.script} logs unavailable`} onClick={() => props.onLogs(script)}><TerminalIcon size={15} /></button>
               </Card>
             )}
           </For>
@@ -1054,16 +1067,22 @@ function WorktreeView(props: {
         <div class="link-grid">
           <For each={props.worktree.links} fallback={<EmptyState icon={<Link2 size={20} />} title="No links configured" copy="Configured links for this worktree will appear here." />}>
             {(link) => (
-              <Card class="link-card">
+              <Card class={`link-card${link.available && link.url ? " link-card--available" : ""}`}>
                 <div class="link-card__heading">
-                  <Show when={link.available && link.url} fallback={<strong>{link.name}</strong>}>
-                    <a href={link.url!} target="_blank" rel="noreferrer" title={link.url!} onClick={(event) => void openShortcut(event, link)}><span>{link.name}</span><ArrowUpRight size={13} /></a>
+                  <strong>{link.name}</strong>
+                  <Show when={link.available && link.url}>
+                    <a class="shortcut-link" href={link.url!} target="_blank" rel="noreferrer" aria-label={`Open ${link.name}`} onClick={(event) => void openShortcut(event, link)}><ArrowUpRight size={16} /></a>
                   </Show>
                   <Badge tone={link.available ? "success" : "warning"}>{link.available ? "available" : "unavailable"}</Badge>
                 </div>
                 <Show when={!link.available || !link.url}><span class="link-card__error">{link.error}</span></Show>
                 <Show when={shortcutError()?.name === link.name}><span class="link-card__error">{shortcutError()?.message}</span></Show>
-                <Show when={link.qr}><details class="qr-details" open={expandedQr() === link.name} onToggle={(event) => setExpandedQr(event.currentTarget.open ? link.name : undefined)}><summary>Show QR code</summary><img src={`data:image/svg+xml,${encodeURIComponent(link.qr!)}`} alt={`QR code for ${link.name}`} /></details></Show>
+                <Show when={link.qr}>
+                  <details class="qr-details" open={expandedQr() === link.name} onToggle={(event) => setExpandedQr(event.currentTarget.open ? link.name : undefined)}>
+                    <summary>Show QR code</summary>
+                    <Show when={expandedQr() === link.name}><img src={`data:image/svg+xml,${encodeURIComponent(link.qr!)}`} alt={`QR code for ${link.name}`} /></Show>
+                  </details>
+                </Show>
               </Card>
             )}
           </For>

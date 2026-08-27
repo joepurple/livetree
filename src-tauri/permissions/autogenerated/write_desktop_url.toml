@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-write-desktop-url"
+description = "Enables the write_desktop_url command without any pre-configured scope."
+commands.allow = ["write_desktop_url"]
+
+[[permission]]
+identifier = "deny-write-desktop-url"
+description = "Denies the write_desktop_url command without any pre-configured scope."
+commands.deny = ["write_desktop_url"]

@@ -9,6 +9,11 @@
     "core:default",
     "core:window:allow-start-dragging",
     "dialog:allow-open",
-    "deep-link:default"
+    "deep-link:default",
+    "allow-native-info",
+    "allow-read-desktop-url",
+    "allow-write-desktop-url",
+    "allow-clear-desktop-url",
+    "allow-open-external-url"
   ]
 }

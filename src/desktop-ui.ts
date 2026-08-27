@@ -6,6 +6,10 @@ export type ConnectionStatus = {
   tone: "active" | "pending" | "inactive" | "error";
 };
 
+export function shouldUseSameViewLink(options: { nativeBridge: boolean; mobileViewport: boolean }): boolean {
+  return !options.nativeBridge && options.mobileViewport;
+}
+
 export function connectionStatus(options: {
   platform: "macos" | "ios";
   serverMode: ServerMode;

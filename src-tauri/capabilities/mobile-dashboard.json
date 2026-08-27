@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/iOS-schema.json",
+  "identifier": "mobile-dashboard-link-opener",
+  "description": "Allows the LiveTree dashboard served by this Mac over Tailscale to open validated external URLs on iOS.",
+  "local": false,
+  "remote": {
+    "urls": [
+      "https://*.ts.net",
+      "https://*.ts.net:*"
+    ]
+  },
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-open-external-url"
+  ],
+  "platforms": [
+    "iOS"
+  ]
+}
