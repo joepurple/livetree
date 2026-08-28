@@ -1,5 +1,6 @@
 {
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "LiveTree",
@@ -9,6 +10,10 @@
         "minHeight": 500,
         "resizable": true,
         "fullscreen": false,
+        "visible": false,
+        "focus": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
       }

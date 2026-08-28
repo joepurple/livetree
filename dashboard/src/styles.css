@@ -148,6 +148,12 @@
 html, body, #root { min-height: 100%; margin: 0; }
 html { background: var(--bg); -webkit-text-size-adjust: 100%; overscroll-behavior-x: none; }
 body { min-width: 320px; background: var(--bg); touch-action: manipulation; }
+html.menu-bar-mode { --menu-bar-anchor-x: 234px; }
+html.menu-bar-mode, html.menu-bar-mode body, html.menu-bar-mode #root { height: 100%; min-height: 0; overflow: hidden; background: transparent; }
+html.menu-bar-mode #root { position: relative; padding: 11px 24px 28px; }
+html.menu-bar-mode #root::before, html.menu-bar-mode #root::after { content: ""; position: absolute; z-index: 2; width: 0; height: 0; pointer-events: none; }
+html.menu-bar-mode #root::before { top: 0; left: var(--menu-bar-anchor-x); border-right: 11px solid transparent; border-bottom: 11px solid var(--line-strong); border-left: 11px solid transparent; transform: translateX(-50%); }
+html.menu-bar-mode #root::after { top: 2px; left: var(--menu-bar-anchor-x); border-right: 10px solid transparent; border-bottom: 10px solid var(--panel); border-left: 10px solid transparent; transform: translateX(-50%); }
 button, input { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -195,6 +201,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .project-menu { position: absolute; z-index: 30; top: calc(100% + 7px); left: 0; width: calc(var(--worktree-width) - 24px); max-width: calc(100vw - 24px); max-height: min(430px,calc(100vh - 90px)); padding: 6px; overflow-y: auto; border: 1px solid var(--line-x); border-radius: 11px; background: var(--panel-2); box-shadow: var(--shadow-float); }
 .project-menu__label { padding: 7px 8px 6px; color: var(--dim); font-size: 8px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .project-menu__row { min-width: 0; display: flex; align-items: stretch; border-radius: 8px; }
+.project-menu__row + .project-menu__row { margin-top: 3px; }
 .project-menu__row:hover, .project-menu__row--active { background: var(--active); }
 .project-menu__option { min-width: 0; flex: 1; padding: 8px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; border: 0; color: var(--muted); background: transparent; cursor: pointer; text-align: left; }
 .project-menu__row--active .project-menu__option { color: var(--text); }
@@ -211,7 +218,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .project-menu__add:hover { color: var(--text); }
 .project-menu__add:disabled { opacity: .5; cursor: wait; }
 .worktree-rail__controls { display: flex; align-items: center; gap: 2px; }
-.worktree-list { min-height: 0; flex: 1; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-x) transparent; }
+.worktree-list { min-height: 0; flex: 1; overflow-y: auto; }
 .worktree-item { position: relative; width: 100%; padding: 10px 15px; display: flex; gap: 0; align-items: flex-start; border: 0; border-top: 1px solid transparent; border-bottom: 1px solid transparent; border-radius: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
 .worktree-item:hover { background: var(--hover); color: var(--text); }
 .worktree-item:disabled { opacity: .5; cursor: wait; }
@@ -232,8 +239,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .worktree-rail__footer-action { min-width: 0; }
 .app-shell--macos .worktree-rail { padding-top: 36px; }
 .app-shell--macos .workspace__inner { padding-top: 42px; }
+.app-shell--menu-bar .macos-titlebar-drag-region { display: none; }
+.app-shell.app-shell--menu-bar { position: relative; height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 16px; background: var(--panel); box-shadow: var(--shadow-pop); }
+.app-shell--menu-bar .terminal-page { position: absolute; z-index: 50; inset: 0; width: 100%; height: 100%; border-left: 0; border-radius: inherit; overflow: hidden; }
+.app-shell--menu-bar .worktree-rail, .app-shell--menu-bar .workspace { height: 100%; min-height: 0; }
+.app-shell--menu-bar .worktree-rail { padding-bottom: 0; overflow: hidden; }
+.app-shell--menu-bar .worktree-list { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+.app-shell--menu-bar .worktree-rail__footer { min-height: 46px; margin-top: 0; padding: 8px 15px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--panel); }
+.app-shell--menu-bar .worktree-rail__footer-action { min-width: 0; margin-left: auto; }
+.app-shell--menu-bar .connection-mode { padding: 3px; margin: -3px; }
+.app-shell--macos.app-shell--menu-bar .worktree-rail { padding-top: 18px; }
+.app-shell--macos.app-shell--menu-bar .workspace__inner { padding-top: 24px; }
 .empty-filter { padding: 24px 10px; color: var(--dim); text-align: center; font-size: 12px; }
-.mobile-stack-header, .mobile-screen-heading, .mobile-disclosure { display: none; }
+.mobile-stack-header, .mobile-disclosure { display: none; }
 
 .workspace { position: relative; min-width: 0; background: radial-gradient(circle at 72% -20%,var(--glow),transparent 38%), var(--bg); }
 .workspace-rail-controls { position: absolute; z-index: 4; top: 14px; left: 14px; display: flex; gap: 4px; }
@@ -338,6 +356,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .connection-setup .ui-button { margin-top: 4px; }
 .connection-setup__error { padding: 9px 11px; color: var(--danger-strong); background: var(--danger-surface); border: 1px solid var(--danger-border-strong); border-radius: 8px; font-size: 11px; line-height: 1.4; }
 .dialog-backdrop { position: fixed; z-index: 100; inset: 0; padding: 20px; display: grid; place-items: center; background: var(--backdrop); backdrop-filter: blur(5px); }
+.app-shell--menu-bar .dialog-backdrop--settings { position: absolute; border-radius: inherit; overflow: hidden; }
 .dialog-card { width: 100%; max-width: 470px; min-width: 0; padding: 20px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--panel-2); box-shadow: var(--shadow-modal); }
 .dialog-card__header { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dialog-card__header h2 { margin: 0 0 5px; color: var(--text); font-size: 19px; letter-spacing: -.03em; }
@@ -348,6 +367,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .project-form input::placeholder { color: var(--dim); }
 .project-form__error { padding: 8px 10px; color: var(--danger-strong); background: var(--danger-surface); border: 1px solid var(--danger-border-strong); border-radius: 7px; font-size: 10px; line-height: 1.4; }
 .dialog-card__actions { margin-top: 10px; display: flex; justify-content: flex-end; gap: 7px; }
+.settings-dialog { display: grid; gap: 18px; }
+.settings-option { min-width: 0; padding: 13px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: var(--inset); }
+.settings-option > span { min-width: 0; display: grid; gap: 4px; }
+.settings-option strong { font-size: 12px; }
+.settings-option small { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.settings-option > .ui-button { flex: 0 0 auto; }
 .remove-confirmation-dialog { display: grid; gap: 14px; }
 .remove-confirmation-dialog__title { min-width: 0; display: flex; align-items: flex-start; gap: 10px; }
 .remove-confirmation-dialog__title > span { flex: 0 0 auto; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--danger-border); border-radius: 9px; color: var(--danger); background: var(--danger-wash); }
@@ -406,7 +431,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
   .mobile-back { justify-self: start; padding-inline: 4px 8px; color: var(--text); }
   .mobile-back span { font-size: 12px; }
   .mobile-stack-header__spacer { width: 31px; height: 31px; }
-  .mobile-screen-heading { display: block; padding: 22px 18px 14px; color: var(--text); font-size: 28px; line-height: 1; font-weight: 700; letter-spacing: -.04em; }
   .mobile-disclosure { display: block; flex: 0 0 auto; align-self: center; color: var(--dim); }
   .worktree-rail { padding: 0 0 max(12px,env(safe-area-inset-bottom)); }
   .worktree-rail__header { position: sticky; top: 0; padding: max(8px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left)); background: var(--veil); border-bottom: 1px solid var(--line); backdrop-filter: blur(16px); }
@@ -415,11 +439,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
   .project-menu { width: min(360px,calc(100vw - 20px)); max-height: min(480px,calc(100dvh - 72px)); }
   .worktree-list { flex: 1 0 auto; display: block; overflow-y: visible; }
   .worktree-item { width: 100%; padding: 14px 18px; align-items: center; }
+  .worktree-item--active { color: var(--muted); border-color: transparent; background: transparent; }
+  .worktree-item--active::before { display: none; }
+  .worktree-item--active:hover { color: var(--text); background: var(--hover); }
   .worktree-item__copy { gap: 4px; }
   .workspace { min-height: 100vh; min-height: 100dvh; }
   .workspace-rail-controls { display: none; }
   .workspace__inner, .app-shell--worktree-collapsed .workspace__inner { padding: 22px 20px max(65px,env(safe-area-inset-bottom)); }
   .worktree-rail__footer { margin-top: 0; padding-bottom: env(safe-area-inset-bottom); }
+  .app-shell--menu-bar .worktree-rail__footer { padding-bottom: 8px; }
   .server-primary-link, .server-tunnel-link, .shortcut-link { width: 44px; height: 44px; border-radius: 10px; -webkit-touch-callout: none; }
   .link-card--available { min-height: 64px; padding: 9px 10px 9px 12px; overflow: hidden; }
   .link-card--available .link-card__heading { min-height: 44px; }
@@ -429,6 +457,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
   .app-shell--macos .worktree-rail__header, .app-shell--macos .mobile-stack-header { padding-top: 32px; }
   .app-shell--macos .mobile-stack-header { min-height: 74px; }
   .app-shell--macos .workspace__inner, .app-shell--macos.app-shell--worktree-collapsed .workspace__inner { padding-top: 22px; }
+  .app-shell--macos.app-shell--menu-bar .worktree-rail { padding-top: 0; }
+  .app-shell--macos.app-shell--menu-bar .worktree-rail__header, .app-shell--macos.app-shell--menu-bar .mobile-stack-header { padding-top: 8px; }
+  .app-shell--macos.app-shell--menu-bar .mobile-stack-header { min-height: 50px; }
+  .app-shell--macos.app-shell--menu-bar .terminal-page__header { min-height: 54px; padding-top: 8px; }
   .empty-projects-state { min-height: calc(100vh - 50px); min-height: calc(100dvh - 50px); }
   input, textarea, select { font-size: 16px; }
 }
@@ -453,6 +485,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
   .terminal-page .xterm { font-size: 11px; }
   .dialog-backdrop { padding: max(14px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(14px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left)); }
   .dialog-card { width: 100%; max-width: 100%; min-width: 0; padding: 17px; }
+  .settings-option { align-items: stretch; flex-direction: column; }
+  .settings-option > .ui-button { align-self: flex-end; }
   .remove-confirmation-dialog .dialog-card__actions { display: grid; grid-template-columns: 1fr 1fr; }
   .remove-confirmation-dialog .dialog-card__actions .ui-button { width: 100%; }
 }

@@ -12,6 +12,7 @@ export type NativeInfo = {
   serverUrl: string | null;
   tailnetUrl: string | null;
   error: string | null;
+  menuBarMode: boolean;
 };
 
 let apiBase: string | undefined;
@@ -50,6 +51,10 @@ export async function loadServerDashboard(value: string): Promise<boolean> {
 
 export async function readNativeInfo(): Promise<NativeInfo> {
   return invoke<NativeInfo>("native_info");
+}
+
+export async function setMenuBarMode(enabled: boolean): Promise<NativeInfo> {
+  return invoke<NativeInfo>("set_menu_bar_mode", { enabled });
 }
 
 export async function pickProjectFolder(): Promise<string | null> {

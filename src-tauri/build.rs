@@ -7,6 +7,7 @@ fn main() {
         "write_desktop_url",
         "clear_desktop_url",
         "open_external_url",
+        "set_menu_bar_mode",
       ]),
     ),
   )

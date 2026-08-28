@@ -4,14 +4,15 @@ import {
   MonitorSmartphone, Server, Settings, Square, Terminal as TerminalIcon, Trash2, TreePine, TriangleAlert, Wifi, X,
 } from "lucide-solid";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { connectionStatus, createPaneBackSwipeRecognizer, shouldUseSameViewLink, type ServerMode } from "../../src/desktop-ui.js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
 import { desktopUrlFromMobileAppLink } from "../../src/mobile-link";
-import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, clearPersistedDesktopUrl, connectedDashboardReturnUrl, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, type NativeInfo } from "./native";
+import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, clearPersistedDesktopUrl, connectedDashboardReturnUrl, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, setMenuBarMode, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "worktrees" | "workspace";
@@ -80,6 +81,7 @@ export default function App() {
   let refreshTimer: number | undefined;
   let nativeTimer: number | undefined;
   let stopListeningForAppLinks: (() => void) | undefined;
+  let stopListeningForNativeInfo: (() => void) | undefined;
   let dashboardStarted = false;
   let connectedDesktopUrl: string | undefined;
   let serverDashboardAttempt: Promise<boolean> | undefined;
@@ -106,7 +108,13 @@ export default function App() {
   const [projectToRemove, setProjectToRemove] = createSignal<Project>();
   const [projectRemoveError, setProjectRemoveError] = createSignal<string>();
   const [worktreeToRemove, setWorktreeToRemove] = createSignal<{ project: Project; worktree: Worktree }>();
+  const [settingsDialogOpen, setSettingsDialogOpen] = createSignal(false);
+  const [settingsError, setSettingsError] = createSignal<string>();
   const toastTimers = new Map<string, number>();
+
+  createEffect(() => {
+    document.documentElement.classList.toggle("menu-bar-mode", Boolean(nativeInfo()?.menuBarMode));
+  });
 
   function setSelectedProjectId(value: string | undefined): void {
     setSelectedProjectIdSignal(value);
@@ -453,6 +461,7 @@ export default function App() {
       startDashboard();
     } else {
       void (async () => {
+        stopListeningForNativeInfo = await listen<NativeInfo>("native-info-changed", (event) => setNativeInfo(event.payload));
         stopListeningForAppLinks = await onOpenUrl(openMobileAppLinks);
         openMobileAppLinks((await getCurrent()) ?? []);
       })().catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
@@ -528,7 +537,7 @@ export default function App() {
     };
     const onWheel = (event: WheelEvent) => {
       const canGoBack = Boolean(logs()) || (mobileQuery.matches && mobileView() === "workspace");
-      const dialogOpen = projectDialogOpen() || Boolean(projectToRemove()) || Boolean(worktreeToRemove());
+      const dialogOpen = settingsDialogOpen() || projectDialogOpen() || Boolean(projectToRemove()) || Boolean(worktreeToRemove());
       if (nativeInfo()?.platform !== "macos" || !canGoBack || dialogOpen || event.ctrlKey || event.metaKey) {
         trackpadBackSwipe.reset();
         return;
@@ -562,6 +571,8 @@ export default function App() {
       document.removeEventListener("pointerdown", onDocumentPointerDown);
       document.removeEventListener("keydown", onDocumentKeyDown);
       stopListeningForAppLinks?.();
+      stopListeningForNativeInfo?.();
+      document.documentElement.classList.remove("menu-bar-mode");
       for (const timer of toastTimers.values()) window.clearTimeout(timer);
       toastTimers.clear();
     });
@@ -621,6 +632,21 @@ export default function App() {
     try { window.localStorage.setItem("livetree.worktreeRailCollapsed", String(next)); } catch {}
   }
 
+  async function changeMenuBarMode(enabled: boolean): Promise<void> {
+    const key = "settings:menu-bar";
+    if (isBusy(key)) return;
+    beginBusy(key);
+    setSettingsError(undefined);
+    try {
+      setNativeInfo(await setMenuBarMode(enabled));
+      setSettingsDialogOpen(false);
+    } catch (caught) {
+      setSettingsError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      endBusy(key);
+    }
+  }
+
   function beginWorktreeResize(event: PointerEvent): void {
     if (window.matchMedia("(max-width: 820px)").matches) return;
     event.preventDefault();
@@ -674,6 +700,7 @@ export default function App() {
         "mobile-view--worktrees": mobileView() === "worktrees",
         "mobile-view--workspace": mobileView() === "workspace",
         "app-shell--macos": nativeInfo()?.platform === "macos",
+        "app-shell--menu-bar": nativeInfo()?.menuBarMode,
       }}
       style={`--worktree-width:${worktreeWidth()}px;--terminal-width:${terminalWidth()}px`}
     >
@@ -731,6 +758,11 @@ export default function App() {
             </Show>
           </div>
           <div class="worktree-rail__controls">
+            <Show when={nativeInfo()?.platform === "macos"}>
+              <Button size="icon" variant="ghost" aria-label="Desktop app settings" title="Desktop app settings" onClick={() => { setSettingsError(undefined); setSettingsDialogOpen(true); }}>
+                <Settings size={16} />
+              </Button>
+            </Show>
             <Button size="icon" variant="ghost" class="refresh-button" aria-label="Refresh dashboard" onClick={() => void load(true)}>
               <RefreshCw size={16} classList={{ spin: refreshing() }} />
             </Button>
@@ -739,7 +771,6 @@ export default function App() {
             </Button>
           </div>
         </header>
-        <div class="mobile-screen-heading">Worktrees</div>
         <div class="worktree-list" aria-label="Worktrees">
           <For each={filteredWorktrees()}>
             {(worktree) => {
@@ -840,6 +871,24 @@ export default function App() {
                 </Button>
               </div>
             </form>
+          </section>
+        </div>
+      </Show>
+      <Show when={settingsDialogOpen() && nativeInfo()?.platform === "macos"}>
+        <div class="dialog-backdrop dialog-backdrop--settings" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isBusy("settings:menu-bar")) setSettingsDialogOpen(false); }}>
+          <section class="dialog-card settings-dialog" role="dialog" aria-modal="true" aria-labelledby="desktop-settings-title" onKeyDown={(event) => { if (event.key === "Escape" && !isBusy("settings:menu-bar")) setSettingsDialogOpen(false); }}>
+            <header class="dialog-card__header">
+              <div><h2 id="desktop-settings-title">Desktop app</h2><p>Choose how LiveTree appears on your Mac.</p></div>
+              <Button size="icon" variant="ghost" aria-label="Close desktop app settings" disabled={isBusy("settings:menu-bar")} onClick={() => setSettingsDialogOpen(false)}><X size={16} /></Button>
+            </header>
+            <div class="settings-option">
+              <Show when={nativeInfo()?.menuBarMode} fallback={
+                <><span><strong>Menu bar</strong><small>Open LiveTree from an icon-only menu bar item in a compact mobile layout.</small></span><Button variant="primary" disabled={isBusy("settings:menu-bar")} onClick={() => void changeMenuBarMode(true)}>{isBusy("settings:menu-bar") && <LoaderCircle class="spin" size={14} />}Move to menu bar</Button></>
+              }>
+                <span><strong>Window</strong><small>Restore the full window and show LiveTree in the Dock and app switcher.</small></span><Button variant="primary" disabled={isBusy("settings:menu-bar")} onClick={() => void changeMenuBarMode(false)}>{isBusy("settings:menu-bar") && <LoaderCircle class="spin" size={14} />}Move to window</Button>
+              </Show>
+            </div>
+            <Show when={settingsError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
           </section>
         </div>
       </Show>
