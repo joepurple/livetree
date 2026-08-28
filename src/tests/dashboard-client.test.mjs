@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  BUNDLED_DESKTOP_URL_PARAM,
   BUNDLED_SETTINGS_PARAM,
   MOBILE_DASHBOARD_PARAM,
+  RECENT_DESKTOP_URL_PARAM,
+  bundledDesktopChangeUrl,
   mobileDashboardReturnUrl,
   mobileDashboardUrl,
+  recentDesktopUrls,
+  requestedBundledDesktopUrl,
   requestsBundledSettings,
   supportsMobileDashboard,
 } from "../../dist/dashboard-client.js";
@@ -46,4 +51,19 @@ test("rejects non-bundled mobile dashboard return targets", () => {
   url.searchParams.set(MOBILE_DASHBOARD_PARAM, "1");
   url.searchParams.set("livetree-return", "https://evil.example/settings");
   assert.equal(mobileDashboardReturnUrl(url.toString()), null);
+});
+
+test("carries a requested desktop and recent links through the bundled handoff", () => {
+  const bundled = bundledDesktopChangeUrl(
+    "tauri://localhost/index.html",
+    "https://second.example.ts.net",
+    ["https://second.example.ts.net", "https://first.example.ts.net"],
+  );
+  assert.equal(bundled.searchParams.get(BUNDLED_DESKTOP_URL_PARAM), "https://second.example.ts.net");
+  assert.equal(requestedBundledDesktopUrl(bundled.toString()), "https://second.example.ts.net");
+  assert.deepEqual(recentDesktopUrls(bundled.toString()), ["https://second.example.ts.net", "https://first.example.ts.net"]);
+
+  const remote = mobileDashboardUrl("https://second.example.ts.net", bundled.toString());
+  assert.deepEqual(remote.searchParams.getAll(RECENT_DESKTOP_URL_PARAM), ["https://second.example.ts.net", "https://first.example.ts.net"]);
+  assert.equal(mobileDashboardReturnUrl(remote.toString())?.searchParams.has(BUNDLED_DESKTOP_URL_PARAM), false);
 });

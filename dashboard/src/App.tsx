@@ -7,12 +7,14 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { listen } from "@tauri-apps/api/event";
 import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { connectionStatus, createPaneBackSwipeRecognizer, shouldUseSameViewLink, type ServerMode } from "../../src/desktop-ui.js";
+import { serverLifecycleStatus, worktreeServerStatus, worktreeServerStatusLabel, type ServerLifecycleStatus } from "../../src/server-status.js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
+import { bundledDesktopChangeUrl } from "../../src/dashboard-client";
 import { desktopUrlFromMobileAppLink } from "../../src/mobile-link";
-import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, connectedDashboardReturnUrl, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, setMenuBarMode, type NativeInfo } from "./native";
+import { apiUrl, bundledDesktopUrlRequested, bundledRecentDesktopUrls, bundledSettingsRequested, clearBundledSettingsRequest, connectedDashboardReturnUrl, desktopDashboardAvailable, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, setMenuBarMode, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "worktrees" | "workspace";
@@ -46,6 +48,13 @@ function branchTitle(worktree: Worktree): string {
   return worktree.branch ?? worktree.ref ?? "detached";
 }
 
+function serverStatusTone(status: ServerLifecycleStatus): "neutral" | "success" | "warning" | "danger" {
+  if (status === "healthy") return "success";
+  if (status === "starting") return "warning";
+  if (status === "failed") return "danger";
+  return "neutral";
+}
+
 function openExternalLink(event: MouseEvent, url: string): void {
   const nativeBridge = nativeLinkOpenerAvailable();
   if (nativeBridge) {
@@ -73,6 +82,33 @@ function storedWidth(key: string, fallback: number): number {
 
 function storedString(key: string): string | undefined {
   try { return window.localStorage.getItem(key) ?? undefined; } catch { return undefined; }
+}
+
+const RECENT_DESKTOPS_KEY = "livetree.recentDesktopUrls";
+const MAX_RECENT_DESKTOPS = 3;
+type RecentDesktopStatus = "checking" | "live" | "offline";
+
+function uniqueDesktopUrls(values: readonly string[]): string[] {
+  const result: string[] = [];
+  for (const value of values) {
+    try {
+      const normalized = normalizeDesktopUrl(value);
+      if (!result.includes(normalized)) result.push(normalized);
+    } catch {
+      // Ignore stale or malformed recent entries.
+    }
+  }
+  return result.slice(0, MAX_RECENT_DESKTOPS);
+}
+
+function storedRecentDesktopUrls(currentUrl?: string): string[] {
+  let stored: unknown = [];
+  try { stored = JSON.parse(window.localStorage.getItem(RECENT_DESKTOPS_KEY) ?? "[]"); } catch {}
+  return uniqueDesktopUrls([
+    ...(currentUrl ? [currentUrl] : []),
+    ...bundledRecentDesktopUrls(),
+    ...(Array.isArray(stored) ? stored.filter((value): value is string => typeof value === "string") : []),
+  ]);
 }
 
 export default function App() {
@@ -110,11 +146,17 @@ export default function App() {
   const [worktreeToRemove, setWorktreeToRemove] = createSignal<{ project: Project; worktree: Worktree }>();
   const [settingsDialogOpen, setSettingsDialogOpen] = createSignal(false);
   const [changeDesktopOpen, setChangeDesktopOpen] = createSignal(false);
+  const [recentDesktopLinks, setRecentDesktopLinks] = createSignal(storedRecentDesktopUrls(serverDashboardReturn ? window.location.origin : undefined));
+  const [recentDesktopStatuses, setRecentDesktopStatuses] = createSignal<Readonly<Record<string, RecentDesktopStatus>>>({});
   const [settingsError, setSettingsError] = createSignal<string>();
   const toastTimers = new Map<string, number>();
 
   createEffect(() => {
     document.documentElement.classList.toggle("menu-bar-mode", Boolean(nativeInfo()?.menuBarMode));
+  });
+
+  createEffect(() => {
+    if (changeDesktopOpen()) checkRecentDesktopLinks();
   });
 
   function setSelectedProjectId(value: string | undefined): void {
@@ -232,6 +274,7 @@ export default function App() {
 
   function connectToDesktop(value: string): void {
     const normalized = normalizeDesktopUrl(value);
+    rememberDesktopLink(normalized);
     window.localStorage.setItem("livetree.desktopUrl", normalized);
     connectedDesktopUrl = normalized;
     if (runningInTauri()) {
@@ -271,17 +314,36 @@ export default function App() {
     });
   }
 
+  function rememberDesktopLink(value: string): string[] {
+    const next = uniqueDesktopUrls([value, ...recentDesktopLinks()]);
+    setRecentDesktopLinks(next);
+    try { window.localStorage.setItem(RECENT_DESKTOPS_KEY, JSON.stringify(next)); } catch {}
+    return next;
+  }
+
+  function checkRecentDesktopLinks(): void {
+    const links = recentDesktopLinks();
+    setRecentDesktopStatuses(Object.fromEntries(links.map((url) => [url, "checking" as const])));
+    for (const url of links) {
+      void desktopDashboardAvailable(url)
+        .then((live) => setRecentDesktopStatuses((current) => ({ ...current, [url]: live ? "live" : "offline" })))
+        .catch(() => setRecentDesktopStatuses((current) => ({ ...current, [url]: "offline" })));
+    }
+  }
+
   function changeDesktop(): void {
     setSettingsDialogOpen(false);
     setChangeDesktopOpen(true);
   }
 
-  function continueDesktopChange(): void {
-    if (serverDashboardReturn) window.location.replace(serverDashboardReturn);
-  }
-
   function finishDesktopChange(value: string): void {
-    connectToDesktop(value);
+    const normalized = normalizeDesktopUrl(value);
+    const recentLinks = rememberDesktopLink(normalized);
+    if (serverDashboardReturn) {
+      window.location.replace(bundledDesktopChangeUrl(serverDashboardReturn.toString(), normalized, recentLinks));
+      return;
+    }
+    connectToDesktop(normalized);
     setChangeDesktopOpen(false);
   }
 
@@ -462,9 +524,21 @@ export default function App() {
 
   onMount(() => {
     const settingsRequested = runningInTauri() && bundledSettingsRequested();
+    let requestedDesktopUrl: string | undefined;
     if (settingsRequested) {
+      const requested = bundledDesktopUrlRequested();
       clearBundledSettingsRequest();
-      setChangeDesktopOpen(true);
+      if (requested) {
+        try {
+          requestedDesktopUrl = normalizeDesktopUrl(requested);
+          rememberDesktopLink(requestedDesktopUrl);
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+          setChangeDesktopOpen(true);
+        }
+      } else {
+        setChangeDesktopOpen(true);
+      }
     }
     if (!runningInTauri()) {
       startDashboard();
@@ -484,8 +558,11 @@ export default function App() {
             startDashboard();
           }
           if (info.platform === "ios" && !appReady()) {
-            const stored = await readPersistedDesktopUrl().catch(() => null) ?? window.localStorage.getItem("livetree.desktopUrl");
+            const stored = requestedDesktopUrl ?? await readPersistedDesktopUrl().catch(() => null) ?? window.localStorage.getItem("livetree.desktopUrl");
+            requestedDesktopUrl = undefined;
             if (stored) connectToDesktop(stored);
+          } else if (info.platform === "ios" && connectedDesktopUrl && !changeDesktopOpen()) {
+            tryServerDashboard(connectedDesktopUrl);
           }
         } catch (caught) {
           setError(caught instanceof Error ? caught.message : String(caught));
@@ -792,11 +869,13 @@ export default function App() {
         <div class="worktree-list" aria-label="Worktrees">
           <For each={filteredWorktrees()}>
             {(worktree) => {
+              const status = () => worktreeServerStatus(worktree.scripts);
+              const statusLabel = () => worktreeServerStatusLabel(status());
               return (
-                <button type="button" class="worktree-item" classList={{ "worktree-item--active": selectedWorktree()?.path === worktree.path }} aria-label={`${worktreeTitle(worktree)}, branch ${branchTitle(worktree)}`} title={worktreeCollapsed() ? worktreeTitle(worktree) : undefined} disabled={isBusy(`worktree:remove:${worktree.path}`)} onClick={() => { setSelectedPath(worktree.path); navigateMobile("workspace"); }}>
+                <button type="button" class="worktree-item" classList={{ "worktree-item--active": selectedWorktree()?.path === worktree.path }} aria-label={`${worktreeTitle(worktree)}, branch ${branchTitle(worktree)}. ${statusLabel()}`} title={worktreeCollapsed() ? worktreeTitle(worktree) : undefined} disabled={isBusy(`worktree:remove:${worktree.path}`)} onClick={() => { setSelectedPath(worktree.path); navigateMobile("workspace"); }}>
                   <span class="worktree-item__collapsed-mark">{worktree.isMain ? "M" : <Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show>}</span>
                   <span class="worktree-item__copy">
-                    <span><strong>{worktreeTitle(worktree)}</strong><Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show></span>
+                    <span><i class={`worktree-item__status worktree-item__status--${status()}`} title={statusLabel()} aria-hidden="true" /><strong>{worktreeTitle(worktree)}</strong><Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show></span>
                     <small class="worktree-item__branch"><b>Branch</b> {branchTitle(worktree)}</small>
                     <small>Updated {age(worktree.modifiedAtMs)} ago</small>
                   </span>
@@ -960,11 +1039,7 @@ export default function App() {
         )}
       </Show>
       <Show when={changeDesktopOpen()}>
-        <Show when={serverDashboardReturn} fallback={
-          <ConnectionSetup platform="ios" mode="change" error={nativeInfo()?.error ?? undefined} onConnect={finishDesktopChange} onCancel={cancelDesktopChange} />
-        }>
-          <DesktopChangeConfirmation onContinue={continueDesktopChange} onCancel={cancelDesktopChange} />
-        </Show>
+        <ConnectionSetup platform="ios" mode="change" error={nativeInfo()?.error ?? undefined} recentUrls={recentDesktopLinks()} recentStatuses={recentDesktopStatuses()} onConnect={finishDesktopChange} onCancel={cancelDesktopChange} />
       </Show>
       <div class="toast-stack" aria-live="polite" aria-label="Background activity">
         <For each={toasts()}>
@@ -984,23 +1059,7 @@ export default function App() {
   );
 }
 
-function DesktopChangeConfirmation(props: { onContinue: () => void; onCancel: () => void }) {
-  return (
-    <main class="connection-setup connection-setup--overlay">
-      <div class="connection-setup__card">
-        <Button size="icon" variant="ghost" class="connection-setup__close" aria-label="Cancel changing desktop" onClick={props.onCancel}><X size={16} /></Button>
-        <span class="brand__mark"><TreePine size={28} /></span>
-        <div><h1>Change desktop?</h1><p>You’ll stay connected to this desktop unless you continue. Continuing opens the mobile app’s connection screen.</p></div>
-        <div class="connection-setup__actions">
-          <Button type="button" variant="ghost" onClick={props.onCancel}>Cancel</Button>
-          <Button type="button" variant="primary" onClick={props.onContinue}>Continue</Button>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-function ConnectionSetup(props: { platform?: NativeInfo["platform"]; mode?: "initial" | "change"; error?: string; onConnect: (url: string) => void; onCancel?: () => void }) {
+function ConnectionSetup(props: { platform?: NativeInfo["platform"]; mode?: "initial" | "change"; error?: string; recentUrls?: readonly string[]; recentStatuses?: Readonly<Record<string, RecentDesktopStatus>>; onConnect: (url: string) => void; onCancel?: () => void }) {
   const [value, setValue] = createSignal("");
   const [validation, setValidation] = createSignal<string>();
 
@@ -1025,8 +1084,21 @@ function ConnectionSetup(props: { platform?: NativeInfo["platform"]; mode?: "ini
           <form onSubmit={submit}>
             <label for="desktop-url">Tailnet dashboard URL</label>
             <input id="desktop-url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" placeholder="https://your-mac.tailnet.ts.net" value={value()} onInput={(event) => setValue(event.currentTarget.value)} />
-            <Button type="submit" disabled={!value().trim()}>Connect</Button>
-            <Show when={props.onCancel}><Button type="button" variant="ghost" onClick={props.onCancel}>Cancel</Button></Show>
+            <Show when={props.mode === "change" && props.recentUrls?.length}>
+              <div class="connection-setup__recent">
+                <span>Recent links</span>
+                <For each={props.recentUrls}>{(url) => {
+                  const status = () => props.recentStatuses?.[url] ?? "checking";
+                  return <button type="button" classList={{ "connection-setup__recent-link--selected": value() === url }} onClick={() => { setValue(url); setValidation(undefined); }}><i class={`recent-link-status recent-link-status--${status()}`} /><span><strong>{url}</strong><small>{status() === "live" ? "Live" : status() === "offline" ? "Offline" : "Checking…"}</small></span><Show when={value() === url}><Check size={13} /></Show></button>;
+                }}</For>
+              </div>
+            </Show>
+            <Show when={props.mode === "change"} fallback={<Button type="submit" disabled={!value().trim()}>Connect</Button>}>
+              <div class="connection-setup__actions">
+                <Button type="button" variant="ghost" onClick={props.onCancel}>Cancel</Button>
+                <Button type="submit" variant="primary" disabled={!value().trim()}>Change desktop</Button>
+              </div>
+            </Show>
           </form>
         </Show>
         <Show when={validation() ?? props.error}>{(message) => <div class="connection-setup__error" role="alert">{message()}</div>}</Show>
@@ -1132,13 +1204,15 @@ function WorktreeView(props: {
         <div class="section-heading"><h3>Dev Servers</h3></div>
         <div class="server-list">
           <For each={props.worktree.scripts} fallback={<EmptyState icon={<Server size={20} />} title="No servers configured" copy="Add a dev script to .ltconf to see it here." />}>
-            {(script) => (
+            {(script) => {
+              const status = () => serverLifecycleStatus(script);
+              return (
               <Card class="server-card">
                 <div class="server-card__identity">
                   <div>
                     <div class="server-name">
                       <strong>{script.script}</strong>
-                      <Badge tone={script.healthy ? "success" : script.running ? "warning" : "neutral"}>{script.healthy ? "healthy" : script.running ? "starting" : "stopped"}</Badge>
+                      <Badge tone={serverStatusTone(status())}>{status()}</Badge>
                     </div>
                     <span class="server-meta">{script.running ? `PID ${script.pid} · up ${age(script.startedAtMs)}` : "Ready to start"}</span>
                   </div>
@@ -1157,7 +1231,8 @@ function WorktreeView(props: {
                 </div>
                 <button type="button" class="server-card__logs" disabled={!script.running || !script.logPath} aria-label={script.running && script.logPath ? `Open ${script.script} logs in side pane` : `${script.script} logs unavailable`} onClick={() => props.onLogs(script)}><TerminalIcon size={15} /></button>
               </Card>
-            )}
+              );
+            }}
           </For>
         </div>
       </section>

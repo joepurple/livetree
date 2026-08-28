@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BUNDLED_SETTINGS_PARAM, mobileDashboardReturnUrl, mobileDashboardUrl, requestsBundledSettings, supportsMobileDashboard } from "../../src/dashboard-client";
+import { BUNDLED_DESKTOP_URL_PARAM, BUNDLED_SETTINGS_PARAM, mobileDashboardReturnUrl, mobileDashboardUrl, recentDesktopUrls, requestedBundledDesktopUrl, requestsBundledSettings, supportsMobileDashboard } from "../../src/dashboard-client";
 import type { ServerMode } from "../../src/desktop-ui.js";
 import { normalizeDesktopUrl } from "../../src/mobile-link";
 
@@ -35,18 +35,38 @@ export function bundledSettingsRequested(): boolean {
   return requestsBundledSettings(window.location.href);
 }
 
+export function bundledDesktopUrlRequested(): string | null {
+  return requestedBundledDesktopUrl(window.location.href);
+}
+
+export function bundledRecentDesktopUrls(): string[] {
+  return recentDesktopUrls(window.location.href);
+}
+
 export function clearBundledSettingsRequest(): void {
   const url = new URL(window.location.href);
   url.searchParams.delete(BUNDLED_SETTINGS_PARAM);
+  url.searchParams.delete(BUNDLED_DESKTOP_URL_PARAM);
   window.history.replaceState(window.history.state, "", url);
 }
 
 export async function loadServerDashboard(value: string): Promise<boolean> {
   const normalized = normalizeDesktopUrl(value);
-  const response = await fetch(new URL("api/health", `${normalized}/`), { cache: "no-store" });
-  if (!response.ok || !supportsMobileDashboard(await response.json())) return false;
+  if (!await desktopDashboardAvailable(normalized)) return false;
   window.location.replace(mobileDashboardUrl(normalized, window.location.href));
   return true;
+}
+
+export async function desktopDashboardAvailable(value: string): Promise<boolean> {
+  const normalized = normalizeDesktopUrl(value);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 4_000);
+  try {
+    const response = await fetch(new URL("api/health", `${normalized}/`), { cache: "no-store", signal: controller.signal });
+    return response.ok && supportsMobileDashboard(await response.json());
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export async function readNativeInfo(): Promise<NativeInfo> {
