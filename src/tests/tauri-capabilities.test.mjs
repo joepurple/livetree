@@ -23,6 +23,7 @@ test("local app capabilities retain every registered custom command", () => {
     "allow-write-desktop-url",
     "allow-clear-desktop-url",
     "allow-open-external-url",
+    "allow-open-worktree-folder",
   ]) {
     assert.ok(capability.permissions.includes(permission), `missing ${permission}`);
   }

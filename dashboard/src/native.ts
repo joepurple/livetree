@@ -91,6 +91,10 @@ export async function openExternalUrl(value: string): Promise<void> {
   await invoke("open_external_url", { url: value });
 }
 
+export async function openWorktreeFolder(value: string): Promise<void> {
+  await invoke("open_worktree_folder", { path: value });
+}
+
 export async function readPersistedDesktopUrl(): Promise<string | null> {
   return invoke<string | null>("read_desktop_url");
 }

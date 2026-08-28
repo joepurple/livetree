@@ -502,6 +502,30 @@ fn open_external_url(_app: tauri::AppHandle, url: String) -> Result<(), String> 
   _app.opener().open_url(url, None::<&str>).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn open_worktree_folder(path: String) -> Result<(), String> {
+  let folder = std::path::PathBuf::from(path);
+  if !folder.is_absolute() {
+    return Err("Worktree folder path must be absolute.".into());
+  }
+  if !folder.is_dir() {
+    return Err("Worktree folder no longer exists.".into());
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    let output = Command::new("/usr/bin/open").arg(folder).output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+      return Ok(());
+    }
+    let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    return Err(if message.is_empty() { "Finder could not open the worktree folder.".into() } else { message });
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  Err("Opening a worktree folder is only available on macOS.".into())
+}
+
 #[cfg(desktop)]
 fn update_from_line(app: &tauri::AppHandle, line: &str, is_stderr: bool) {
   let state = app.state::<AppState>();
@@ -745,7 +769,7 @@ pub fn run() {
   let builder = builder.plugin(tauri_plugin_shell::init());
 
   let app = builder
-    .invoke_handler(tauri::generate_handler![native_info, read_desktop_url, write_desktop_url, clear_desktop_url, open_external_url, set_menu_bar_mode])
+    .invoke_handler(tauri::generate_handler![native_info, read_desktop_url, write_desktop_url, clear_desktop_url, open_external_url, open_worktree_folder, set_menu_bar_mode])
     .on_window_event(|window, event| {
       #[cfg(target_os = "macos")]
       if let tauri::WindowEvent::CloseRequested { api, .. } = event {

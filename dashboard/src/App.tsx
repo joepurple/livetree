@@ -5,16 +5,17 @@ import {
 } from "lucide-solid";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { listen } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
 import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { connectionStatus, createPaneBackSwipeRecognizer, shouldUseSameViewLink, type ServerMode } from "../../src/desktop-ui.js";
-import { serverLifecycleStatus, worktreeServerStatus, worktreeServerStatusLabel, type ServerLifecycleStatus } from "../../src/server-status.js";
+import { serverLifecycleStatus, worktreeServerStatus, worktreeServerStatusLabel } from "../../src/server-status.js";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
 import { bundledDesktopChangeUrl } from "../../src/dashboard-client";
 import { desktopUrlFromMobileAppLink } from "../../src/mobile-link";
-import { apiUrl, bundledDesktopUrlRequested, bundledRecentDesktopUrls, bundledSettingsRequested, clearBundledSettingsRequest, connectedDashboardReturnUrl, desktopDashboardAvailable, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, setMenuBarMode, type NativeInfo } from "./native";
+import { apiUrl, bundledDesktopUrlRequested, bundledRecentDesktopUrls, bundledSettingsRequested, clearBundledSettingsRequest, connectedDashboardReturnUrl, desktopDashboardAvailable, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, openWorktreeFolder, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, setMenuBarMode, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "worktrees" | "workspace";
@@ -46,13 +47,6 @@ function worktreeTitle(worktree: Worktree): string {
 
 function branchTitle(worktree: Worktree): string {
   return worktree.branch ?? worktree.ref ?? "detached";
-}
-
-function serverStatusTone(status: ServerLifecycleStatus): "neutral" | "success" | "warning" | "danger" {
-  if (status === "healthy") return "success";
-  if (status === "starting") return "warning";
-  if (status === "failed") return "danger";
-  return "neutral";
 }
 
 function openExternalLink(event: MouseEvent, url: string): void {
@@ -875,7 +869,7 @@ export default function App() {
                 <button type="button" class="worktree-item" classList={{ "worktree-item--active": selectedWorktree()?.path === worktree.path }} aria-label={`${worktreeTitle(worktree)}, branch ${branchTitle(worktree)}. ${statusLabel()}`} title={worktreeCollapsed() ? worktreeTitle(worktree) : undefined} disabled={isBusy(`worktree:remove:${worktree.path}`)} onClick={() => { setSelectedPath(worktree.path); navigateMobile("workspace"); }}>
                   <span class="worktree-item__collapsed-mark">{worktree.isMain ? "M" : <Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show>}</span>
                   <span class="worktree-item__copy">
-                    <span><i class={`worktree-item__status worktree-item__status--${status()}`} title={statusLabel()} aria-hidden="true" /><strong>{worktreeTitle(worktree)}</strong><Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show></span>
+                    <span><i class={`status-indicator status-indicator--${status()}`} title={statusLabel()} aria-hidden="true" /><strong classList={{ "main-worktree-title": worktree.isMain }}>{worktreeTitle(worktree)}</strong><Show when={worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show></span>
                     <small class="worktree-item__branch"><b>Branch</b> {branchTitle(worktree)}</small>
                     <small>Updated {age(worktree.modifiedAtMs)} ago</small>
                   </span>
@@ -1125,6 +1119,8 @@ function WorktreeView(props: {
   const [expandedQr, setExpandedQr] = createSignal<string>();
   const [shortcutError, setShortcutError] = createSignal<{ name: string; message: string }>();
   let copiedTimer: number | undefined;
+  let pathMenu: Menu | undefined;
+  let pathMenuPromise: Promise<Menu> | undefined;
   const actionKey = (kind: string, script: Script) => `${props.projectId}:${props.worktree.path}:${script.script}:${kind}`;
   const isBusy = (kind: string, script: Script) => props.busy.has(actionKey(kind, script));
   const isScriptBusy = (script: Script) => props.busy.has(`worktree:remove:${props.worktree.path}`) || ["dev/start", "dev/stop", "tunnel/start", "tunnel/stop"].some((kind) => isBusy(kind, script));
@@ -1147,7 +1143,31 @@ function WorktreeView(props: {
     copiedTimer = window.setTimeout(() => setCopiedPath(undefined), 1_500);
   }
 
-  onCleanup(() => window.clearTimeout(copiedTimer));
+  async function openFolder(): Promise<void> {
+    try {
+      await openWorktreeFolder(props.worktree.path);
+    } catch (error) {
+      console.error(`Unable to open ${props.worktree.path} in Finder`, error);
+    }
+  }
+
+  async function showPathMenu(event: MouseEvent): Promise<void> {
+    if (props.platform !== "macos") return;
+    event.preventDefault();
+    pathMenuPromise ??= Menu.new({
+      items: [
+        { text: "Copy", action: () => void copyPath() },
+        { text: "Open in Finder", action: () => void openFolder() },
+      ],
+    });
+    pathMenu = await pathMenuPromise;
+    await pathMenu.popup();
+  }
+
+  onCleanup(() => {
+    window.clearTimeout(copiedTimer);
+    void pathMenu?.close();
+  });
 
   async function openShortcut(event: MouseEvent, link: Link): Promise<void> {
     if (!link.url) return;
@@ -1181,16 +1201,14 @@ function WorktreeView(props: {
         <div class="workspace-header__identity">
           <span class="workspace-project">{props.projectName}</span>
           <div class="workspace-title">
-            <h2>{worktreeTitle(props.worktree)}</h2>
+            <h2 classList={{ "main-worktree-title": props.worktree.isMain }}>{worktreeTitle(props.worktree)}</h2>
             <Show when={props.worktree.chat}>{(chat) => <AgentIcon provider={chat().provider} />}</Show>
           </div>
           <div class="workspace-meta">
             <div class="branch-line"><span>Branch</span><code>{branchTitle(props.worktree)}</code></div>
-            <Show when={!props.worktree.isMain}>
-              <button type="button" class="workspace-path" title={`Copy ${props.worktree.path}`} aria-label={`Copy worktree path ${props.worktree.path}`} onClick={() => void copyPath()}>
-                <Folder size={12} /><span>{shortPath(props.worktree.path)}</span>{copiedPath() === props.worktree.path ? <Check size={13} /> : <Copy size={13} />}
-              </button>
-            </Show>
+            <button type="button" class="workspace-path" title={`Copy ${props.worktree.path}`} aria-label={`Copy worktree path ${props.worktree.path}`} onClick={() => void copyPath()} onContextMenu={(event) => void showPathMenu(event).catch((error) => console.error("Unable to show worktree folder menu", error))}>
+              <Folder size={12} /><span>{shortPath(props.worktree.path)}</span>{copiedPath() === props.worktree.path ? <Check size={13} /> : <Copy size={13} />}
+            </button>
           </div>
         </div>
         <Show when={!props.worktree.isMain}>
@@ -1212,7 +1230,7 @@ function WorktreeView(props: {
                   <div>
                     <div class="server-name">
                       <strong>{script.script}</strong>
-                      <Badge tone={serverStatusTone(status())}>{status()}</Badge>
+                      <i class={`status-indicator status-indicator--${status()}`} role="img" aria-label={`Status: ${status()}`} title={`Status: ${status()}`} />
                     </div>
                     <span class="server-meta">{script.running ? `PID ${script.pid} · up ${age(script.startedAtMs)}` : "Ready to start"}</span>
                   </div>

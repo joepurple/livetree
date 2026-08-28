@@ -15,6 +15,7 @@
     "allow-write-desktop-url",
     "allow-clear-desktop-url",
     "allow-open-external-url",
+    "allow-open-worktree-folder",
     "allow-set-menu-bar-mode"
   ]
 }

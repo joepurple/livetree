@@ -224,10 +224,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .worktree-item__collapsed-mark { display: none; }
 .worktree-item__copy { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .worktree-item__copy > span { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.worktree-item__status { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--label); box-shadow: 0 0 0 3px var(--wash-2); }
-.worktree-item__status--starting { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-wash); }
-.worktree-item__status--healthy { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-border); }
-.worktree-item__status--failed { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-wash-strong); }
+.status-indicator { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--label); box-shadow: 0 0 0 3px var(--wash-2); }
+.status-indicator--starting { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-wash); }
+.status-indicator--healthy { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-border); }
+.status-indicator--failed { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-wash-strong); }
 .worktree-item__copy strong { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .worktree-item__copy small { color: var(--dim); font-size: 10px; }
 .worktree-item__branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -263,6 +263,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .workspace-project { color: var(--label); font-size: 9px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
 .workspace-title { min-width: 0; display: flex; align-items: center; gap: 9px; }
 .workspace-header h2 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: clamp(21px,2.25vw,28px); letter-spacing: -.035em; line-height: 1.12; }
+.main-worktree-title { padding-right: .12em; font-style: italic; }
 .branch-line { min-width: 0; display: flex; align-items: baseline; gap: 7px; color: var(--dim); font-size: 10px; }
 .branch-line > span { color: var(--label); font-size: 8px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .branch-line code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
