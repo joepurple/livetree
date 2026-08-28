@@ -81,6 +81,7 @@ export function TerminalPage(props: { selection: LogSelection; onClose: () => vo
 
   return (
     <aside class="terminal-page" aria-label="Server logs">
+      <div class="pane-titlebar-drag-region pane-titlebar-drag-region--terminal" data-tauri-drag-region />
       <div class="terminal-page__resizer" role="separator" aria-label="Resize terminal pane" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="760" aria-valuenow={props.width} onPointerDown={props.onResizeStart} />
       <header class="terminal-page__header">
         <Button size="icon" variant="ghost" class="terminal-page__close terminal-page__close--pane" aria-label="Close logs" onClick={props.onClose}><X size={17} /></Button>

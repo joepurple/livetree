@@ -12,7 +12,7 @@ import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { TerminalPage } from "./TerminalPage";
 import { desktopUrlFromMobileAppLink } from "../../src/mobile-link";
-import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, clearPersistedDesktopUrl, connectedDashboardReturnUrl, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, setMenuBarMode, type NativeInfo } from "./native";
+import { apiUrl, bundledSettingsRequested, clearBundledSettingsRequest, connectedDashboardReturnUrl, loadServerDashboard, nativeLinkOpenerAvailable, normalizeDesktopUrl, openExternalUrl, persistDesktopUrl, pickProjectFolder, readNativeInfo, readPersistedDesktopUrl, runningInTauri, setApiBase, setMenuBarMode, type NativeInfo } from "./native";
 import type { DashboardState, Link, LogSelection, Project, Script, Worktree } from "./types";
 
 type MobileView = "worktrees" | "workspace";
@@ -109,6 +109,7 @@ export default function App() {
   const [projectRemoveError, setProjectRemoveError] = createSignal<string>();
   const [worktreeToRemove, setWorktreeToRemove] = createSignal<{ project: Project; worktree: Worktree }>();
   const [settingsDialogOpen, setSettingsDialogOpen] = createSignal(false);
+  const [changeDesktopOpen, setChangeDesktopOpen] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal<string>();
   const toastTimers = new Map<string, number>();
 
@@ -137,7 +138,15 @@ export default function App() {
   const filteredWorktrees = createMemo(() => selectedProject()?.worktrees ?? []);
   const activeConnectionStatus = createMemo(() => {
     const info = nativeInfo();
-    if (!info) return undefined;
+    if (!info) {
+      if (!serverDashboardReturn) return undefined;
+      return connectionStatus({
+        platform: "ios",
+        serverMode: state() ? "tailscale" : error() ? "error" : "starting",
+        dashboardReady: Boolean(state()),
+        dashboardError: Boolean(error() && !state()),
+      });
+    }
     let serverMode: ServerMode = info.serverMode;
     if (info.platform === "ios" && appReady()) {
       serverMode = state() ? "tailscale" : error() ? "error" : "starting";
@@ -243,6 +252,7 @@ export default function App() {
       try {
         const desktopUrl = desktopUrlFromMobileAppLink(url);
         if (!desktopUrl) continue;
+        setChangeDesktopOpen(false);
         connectToDesktop(desktopUrl);
         return;
       } catch (caught) {
@@ -253,7 +263,7 @@ export default function App() {
   }
 
   function tryServerDashboard(value: string): void {
-    if (serverDashboardAttempt || nativeInfo()?.platform !== "ios" || serverDashboardReturn) return;
+    if (serverDashboardAttempt || changeDesktopOpen() || nativeInfo()?.platform !== "ios" || serverDashboardReturn) return;
     const attempt = loadServerDashboard(value).catch(() => false);
     serverDashboardAttempt = attempt;
     void attempt.finally(() => {
@@ -261,24 +271,23 @@ export default function App() {
     });
   }
 
-  function resetDesktopConnection(): void {
-    window.localStorage.removeItem("livetree.desktopUrl");
-    if (runningInTauri()) void clearPersistedDesktopUrl().catch((caught) => console.error("Unable to clear desktop URL", caught));
-    connectedDesktopUrl = undefined;
-    setApiBase(undefined);
-    setState(undefined);
-    setError(undefined);
-    setAppReady(false);
-    dashboardStarted = false;
-    window.clearInterval(refreshTimer);
+  function changeDesktop(): void {
+    setSettingsDialogOpen(false);
+    setChangeDesktopOpen(true);
   }
 
-  function changeDesktop(): void {
-    if (serverDashboardReturn) {
-      window.location.replace(serverDashboardReturn);
-      return;
-    }
-    resetDesktopConnection();
+  function continueDesktopChange(): void {
+    if (serverDashboardReturn) window.location.replace(serverDashboardReturn);
+  }
+
+  function finishDesktopChange(value: string): void {
+    connectToDesktop(value);
+    setChangeDesktopOpen(false);
+  }
+
+  function cancelDesktopChange(): void {
+    setChangeDesktopOpen(false);
+    if (connectedDesktopUrl) tryServerDashboard(connectedDesktopUrl);
   }
 
   async function action(kind: string, project: Project, worktree: Worktree, script: Script): Promise<void> {
@@ -455,7 +464,7 @@ export default function App() {
     const settingsRequested = runningInTauri() && bundledSettingsRequested();
     if (settingsRequested) {
       clearBundledSettingsRequest();
-      resetDesktopConnection();
+      setChangeDesktopOpen(true);
     }
     if (!runningInTauri()) {
       startDashboard();
@@ -474,7 +483,7 @@ export default function App() {
             setAppReady(true);
             startDashboard();
           }
-          if (info.platform === "ios" && !appReady() && !settingsRequested) {
+          if (info.platform === "ios" && !appReady()) {
             const stored = await readPersistedDesktopUrl().catch(() => null) ?? window.localStorage.getItem("livetree.desktopUrl");
             if (stored) connectToDesktop(stored);
           }
@@ -691,7 +700,15 @@ export default function App() {
   }
 
   return (
-    <Show when={appReady()} fallback={<ConnectionSetup platform={nativeInfo()?.platform} error={nativeInfo()?.error ?? error()} onConnect={connectToDesktop} />}>
+    <Show when={appReady()} fallback={
+      <ConnectionSetup
+        platform={nativeInfo()?.platform}
+        mode={changeDesktopOpen() ? "change" : "initial"}
+        error={nativeInfo()?.error ?? error()}
+        onConnect={changeDesktopOpen() ? finishDesktopChange : connectToDesktop}
+        onCancel={changeDesktopOpen() ? cancelDesktopChange : undefined}
+      />
+    }>
     <div
       class="app-shell"
       classList={{
@@ -706,6 +723,7 @@ export default function App() {
     >
       <Show when={nativeInfo()?.platform === "macos"}><div class="macos-titlebar-drag-region" data-tauri-drag-region /></Show>
       <aside class="worktree-rail">
+        <div class="pane-titlebar-drag-region pane-titlebar-drag-region--rail" data-tauri-drag-region />
         <header class="worktree-rail__header">
           <div class="project-picker" ref={projectPicker}>
             <button
@@ -758,8 +776,8 @@ export default function App() {
             </Show>
           </div>
           <div class="worktree-rail__controls">
-            <Show when={nativeInfo()?.platform === "macos"}>
-              <Button size="icon" variant="ghost" aria-label="Desktop app settings" title="Desktop app settings" onClick={() => { setSettingsError(undefined); setSettingsDialogOpen(true); }}>
+            <Show when={nativeInfo()?.platform === "macos" || nativeInfo()?.platform === "ios" || serverDashboardReturn}>
+              <Button size="icon" variant="ghost" aria-label="Settings" title="Settings" onClick={() => { setSettingsError(undefined); setSettingsDialogOpen(true); }}>
                 <Settings size={16} />
               </Button>
             </Show>
@@ -789,30 +807,31 @@ export default function App() {
           </For>
           <Show when={filteredWorktrees().length === 0}><div class="empty-filter">{selectedProject() ? "No matching worktrees" : "No worktrees"}</div></Show>
         </div>
-        <div class="worktree-rail__footer">
-          <Show when={activeConnectionStatus()}>{(status) => <span class={`connection-mode connection-mode--${status().tone}`} title={status().title}><i />{status().label}</span>}</Show>
-          <div class="worktree-rail__footer-action">
-            <Show when={nativeInfo()?.platform === "ios" || serverDashboardReturn} fallback={
-              <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable Tailscale Link</button>}>
-                <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
-                  <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy Tailscale Link</button>
-                </Match>
-                <Match when={state()?.tailnet.status === "starting" || isBusy("tailnet:start")}>
-                  <span class="tailnet-status" title="Starting Tailscale Serve"><LoaderCircle class="spin" size={13} />Starting Tailscale Link</span>
-                </Match>
-                <Match when={state()?.tailnet.status === "unavailable"}>
-                  <button type="button" class="tailnet-copy" title={state()?.tailnet.error ?? "Tailscale is unavailable"} disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Retry Tailscale Link</button>
-                </Match>
-              </Switch>
-            }>
-              <button type="button" class="tailnet-copy" onClick={changeDesktop}><Settings size={13} />Change desktop</button>
+        <Show when={activeConnectionStatus() || (nativeInfo()?.platform !== "ios" && !serverDashboardReturn)}>
+          <div class="worktree-rail__footer">
+            <Show when={activeConnectionStatus()}>{(status) => <span class={`connection-mode connection-mode--${status().tone}`} title={status().title}><i />{status().label}</span>}</Show>
+            <Show when={nativeInfo()?.platform !== "ios" && !serverDashboardReturn}>
+              <div class="worktree-rail__footer-action">
+                <Switch fallback={<button type="button" class="tailnet-copy" disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Enable Tailscale Link</button>}>
+                  <Match when={state()?.tailnet.status === "ready" && state()?.tailnet.url}>
+                    <button type="button" class="tailnet-copy" title={state()?.tailnet.url ?? undefined} onClick={() => void navigator.clipboard.writeText(state()?.tailnet.url ?? "")}><MonitorSmartphone size={13} />Copy Tailscale Link</button>
+                  </Match>
+                  <Match when={state()?.tailnet.status === "starting" || isBusy("tailnet:start")}>
+                    <span class="tailnet-status" title="Starting Tailscale Serve"><LoaderCircle class="spin" size={13} />Starting Tailscale Link</span>
+                  </Match>
+                  <Match when={state()?.tailnet.status === "unavailable"}>
+                    <button type="button" class="tailnet-copy" title={state()?.tailnet.error ?? "Tailscale is unavailable"} disabled={isBusy("tailnet:start")} onClick={() => void startTailnet()}><MonitorSmartphone size={13} />Retry Tailscale Link</button>
+                  </Match>
+                </Switch>
+              </div>
             </Show>
           </div>
-        </div>
+        </Show>
         <div class="rail-resizer" role="separator" aria-label="Resize worktrees sidebar" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="440" aria-valuenow={worktreeWidth()} onPointerDown={beginWorktreeResize} />
       </aside>
 
       <main class="workspace">
+        <div class="pane-titlebar-drag-region pane-titlebar-drag-region--workspace" data-tauri-drag-region />
         <div class="mobile-stack-header">
           <Button size="sm" variant="ghost" class="mobile-back" aria-label="Back to worktrees" onClick={() => backMobile("worktrees")}><ChevronLeft size={18} /><span>Worktrees</span></Button>
           <strong>{selectedProject()?.name ?? "livetree"}</strong>
@@ -874,20 +893,27 @@ export default function App() {
           </section>
         </div>
       </Show>
-      <Show when={settingsDialogOpen() && nativeInfo()?.platform === "macos"}>
+      <Show when={settingsDialogOpen()}>
         <div class="dialog-backdrop dialog-backdrop--settings" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isBusy("settings:menu-bar")) setSettingsDialogOpen(false); }}>
-          <section class="dialog-card settings-dialog" role="dialog" aria-modal="true" aria-labelledby="desktop-settings-title" onKeyDown={(event) => { if (event.key === "Escape" && !isBusy("settings:menu-bar")) setSettingsDialogOpen(false); }}>
+          <section class="dialog-card settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" onKeyDown={(event) => { if (event.key === "Escape" && !isBusy("settings:menu-bar")) setSettingsDialogOpen(false); }}>
             <header class="dialog-card__header">
-              <div><h2 id="desktop-settings-title">Desktop app</h2><p>Choose how LiveTree appears on your Mac.</p></div>
-              <Button size="icon" variant="ghost" aria-label="Close desktop app settings" disabled={isBusy("settings:menu-bar")} onClick={() => setSettingsDialogOpen(false)}><X size={16} /></Button>
+              <div><h2 id="settings-title">Settings</h2><p>{nativeInfo()?.platform === "macos" ? "Choose how LiveTree appears on your Mac." : "Manage your LiveTree mobile app."}</p></div>
+              <Button size="icon" variant="ghost" aria-label="Close settings" disabled={isBusy("settings:menu-bar")} onClick={() => setSettingsDialogOpen(false)}><X size={16} /></Button>
             </header>
-            <div class="settings-option">
-              <Show when={nativeInfo()?.menuBarMode} fallback={
-                <><span><strong>Menu bar</strong><small>Open LiveTree from an icon-only menu bar item in a compact mobile layout.</small></span><Button variant="primary" disabled={isBusy("settings:menu-bar")} onClick={() => void changeMenuBarMode(true)}>{isBusy("settings:menu-bar") && <LoaderCircle class="spin" size={14} />}Move to menu bar</Button></>
-              }>
-                <span><strong>Window</strong><small>Restore the full window and show LiveTree in the Dock and app switcher.</small></span><Button variant="primary" disabled={isBusy("settings:menu-bar")} onClick={() => void changeMenuBarMode(false)}>{isBusy("settings:menu-bar") && <LoaderCircle class="spin" size={14} />}Move to window</Button>
-              </Show>
-            </div>
+            <Show when={nativeInfo()?.platform === "macos"} fallback={
+              <div class="settings-option">
+                <span><strong>Desktop</strong><small>Disconnect from this desktop and connect the mobile app to another one.</small></span>
+                <Button variant="primary" onClick={changeDesktop}>Change desktop</Button>
+              </div>
+            }>
+              <div class="settings-option">
+                <Show when={nativeInfo()?.menuBarMode} fallback={
+                  <><span><strong>Menu bar</strong><small>Open LiveTree from an icon-only menu bar item in a compact mobile layout.</small></span><Button variant="primary" disabled={isBusy("settings:menu-bar")} onClick={() => void changeMenuBarMode(true)}>{isBusy("settings:menu-bar") && <LoaderCircle class="spin" size={14} />}Move to menu bar</Button></>
+                }>
+                  <span><strong>Window</strong><small>Restore the full window and show LiveTree in the Dock and app switcher.</small></span><Button variant="primary" disabled={isBusy("settings:menu-bar")} onClick={() => void changeMenuBarMode(false)}>{isBusy("settings:menu-bar") && <LoaderCircle class="spin" size={14} />}Move to window</Button>
+                </Show>
+              </div>
+            </Show>
             <Show when={settingsError()}>{(message) => <div class="project-form__error" role="alert">{message()}</div>}</Show>
           </section>
         </div>
@@ -933,6 +959,13 @@ export default function App() {
           </div>
         )}
       </Show>
+      <Show when={changeDesktopOpen()}>
+        <Show when={serverDashboardReturn} fallback={
+          <ConnectionSetup platform="ios" mode="change" error={nativeInfo()?.error ?? undefined} onConnect={finishDesktopChange} onCancel={cancelDesktopChange} />
+        }>
+          <DesktopChangeConfirmation onContinue={continueDesktopChange} onCancel={cancelDesktopChange} />
+        </Show>
+      </Show>
       <div class="toast-stack" aria-live="polite" aria-label="Background activity">
         <For each={toasts()}>
           {(toast) => (
@@ -951,7 +984,23 @@ export default function App() {
   );
 }
 
-function ConnectionSetup(props: { platform?: NativeInfo["platform"]; error?: string; onConnect: (url: string) => void }) {
+function DesktopChangeConfirmation(props: { onContinue: () => void; onCancel: () => void }) {
+  return (
+    <main class="connection-setup connection-setup--overlay">
+      <div class="connection-setup__card">
+        <Button size="icon" variant="ghost" class="connection-setup__close" aria-label="Cancel changing desktop" onClick={props.onCancel}><X size={16} /></Button>
+        <span class="brand__mark"><TreePine size={28} /></span>
+        <div><h1>Change desktop?</h1><p>You’ll stay connected to this desktop unless you continue. Continuing opens the mobile app’s connection screen.</p></div>
+        <div class="connection-setup__actions">
+          <Button type="button" variant="ghost" onClick={props.onCancel}>Cancel</Button>
+          <Button type="button" variant="primary" onClick={props.onContinue}>Continue</Button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function ConnectionSetup(props: { platform?: NativeInfo["platform"]; mode?: "initial" | "change"; error?: string; onConnect: (url: string) => void; onCancel?: () => void }) {
   const [value, setValue] = createSignal("");
   const [validation, setValidation] = createSignal<string>();
 
@@ -966,16 +1015,18 @@ function ConnectionSetup(props: { platform?: NativeInfo["platform"]; error?: str
   }
 
   return (
-    <main class="connection-setup">
+    <main class="connection-setup" classList={{ "connection-setup--overlay": props.mode === "change" }}>
       <Show when={props.platform === "macos"}><div class="macos-titlebar-drag-region" data-tauri-drag-region /></Show>
       <div class="connection-setup__card">
+        <Show when={props.onCancel}><Button size="icon" variant="ghost" class="connection-setup__close" aria-label="Cancel changing desktop" onClick={props.onCancel}><X size={16} /></Button></Show>
         <span class="brand__mark"><TreePine size={28} /></span>
         <Show when={props.platform === "ios"} fallback={<div><h1>Starting LiveTree</h1><p>The Mac app is launching its embedded dashboard service.</p></div>}>
-          <div><h1>Connect to LiveTree</h1><p>Open LiveTree on your Mac, copy its Tailscale Link, and paste it here. Both devices must be signed into the same Tailscale network.</p></div>
+          <div><h1>{props.mode === "change" ? "Change desktop" : "Connect to LiveTree"}</h1><p>{props.mode === "change" ? "Paste another desktop’s Tailscale Link. Your current connection stays active until you connect to a new one." : "Open LiveTree on your Mac, copy its Tailscale Link, and paste it here. Both devices must be signed into the same Tailscale network."}</p></div>
           <form onSubmit={submit}>
             <label for="desktop-url">Tailnet dashboard URL</label>
             <input id="desktop-url" type="url" inputmode="url" autocomplete="url" autocapitalize="none" placeholder="https://your-mac.tailnet.ts.net" value={value()} onInput={(event) => setValue(event.currentTarget.value)} />
             <Button type="submit" disabled={!value().trim()}>Connect</Button>
+            <Show when={props.onCancel}><Button type="button" variant="ghost" onClick={props.onCancel}>Cancel</Button></Show>
           </form>
         </Show>
         <Show when={validation() ?? props.error}>{(message) => <div class="connection-setup__error" role="alert">{message()}</div>}</Show>

@@ -4,6 +4,10 @@ use serde::Serialize;
 use std::{fs, sync::Mutex};
 use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
+use objc2_app_kit::{NSWindow, NSWindowButton};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSRect, NSSize};
+#[cfg(target_os = "macos")]
 use tauri::{
   menu::{Menu, MenuItem},
   tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -66,9 +70,42 @@ struct AppState {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct WindowPlacement {
-  position: PhysicalPosition<i32>,
-  size: PhysicalSize<u32>,
+  /// AppKit's complete decorated frame, in its native coordinate system.
+  frame: NSRect,
   maximized: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn appkit_window<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<&NSWindow, String> {
+  let pointer = window.ns_window().map_err(|error| error.to_string())?.cast::<NSWindow>();
+  if pointer.is_null() {
+    return Err("Could not access the native LiveTree window.".into());
+  }
+  // Tauri owns this NSWindow for at least as long as the borrowed
+  // WebviewWindow, so the native pointer is valid for this borrow.
+  Ok(unsafe { &*pointer })
+}
+
+#[cfg(target_os = "macos")]
+fn set_appkit_window_frame<R: tauri::Runtime>(
+  window: &tauri::WebviewWindow<R>,
+  frame: NSRect,
+  window_buttons_visible: bool,
+) -> Result<(), String> {
+  let native_window = window.clone();
+  window
+    .run_on_main_thread(move || match appkit_window(&native_window) {
+      Ok(window) => {
+        for button in [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton] {
+          if let Some(button) = window.standardWindowButton(button) {
+            button.setHidden(!window_buttons_visible);
+          }
+        }
+        window.setFrame_display(frame, true);
+      }
+      Err(error) => log::error!("Unable to update the native LiveTree window: {error}"),
+    })
+    .map_err(|error| error.to_string())
 }
 
 impl Default for AppState {
@@ -142,19 +179,16 @@ fn compact_main_window(app: &tauri::AppHandle) -> Result<(), String> {
   let mut placement = state.regular_window_placement.lock().expect("window placement lock poisoned");
   if placement.is_none() {
     *placement = Some(WindowPlacement {
-      position: window.outer_position().map_err(|error| error.to_string())?,
-      size: window.inner_size().map_err(|error| error.to_string())?,
+      frame: appkit_window(&window)?.frame(),
       maximized: window.is_maximized().map_err(|error| error.to_string())?,
     });
   }
+  let regular_frame = placement.as_ref().expect("regular window placement was just initialized").frame;
   drop(placement);
 
   window.unmaximize().map_err(|error| error.to_string())?;
-  let compact_size = LogicalSize::new(468.0, 758.0);
-  window.set_size(compact_size).map_err(|error| error.to_string())?;
-  window.set_min_size(Some(compact_size)).map_err(|error| error.to_string())?;
-  window.set_max_size(Some(compact_size)).map_err(|error| error.to_string())?;
-  window.set_decorations(false).map_err(|error| error.to_string())?;
+  let compact_frame = NSRect::new(regular_frame.origin, NSSize::new(468.0, 758.0));
+  set_appkit_window_frame(&window, compact_frame, false)?;
   window.set_resizable(false).map_err(|error| error.to_string())?;
   window.set_maximizable(false).map_err(|error| error.to_string())?;
   window.set_minimizable(false).map_err(|error| error.to_string())?;
@@ -184,20 +218,18 @@ fn restore_main_window(app: &tauri::AppHandle) -> Result<(), String> {
   window.set_resizable(true).map_err(|error| error.to_string())?;
   window.set_maximizable(true).map_err(|error| error.to_string())?;
   window.set_minimizable(true).map_err(|error| error.to_string())?;
-  window.set_decorations(true).map_err(|error| error.to_string())?;
+  if let Some(placement) = placement {
+    window.unmaximize().map_err(|error| error.to_string())?;
+    set_appkit_window_frame(&window, placement.frame, true)?;
+  }
   let background = match window.theme() {
     Ok(tauri::Theme::Dark) => Color(11, 13, 16, 255),
     _ => Color(242, 244, 242, 255),
   };
   window.set_background_color(Some(background)).map_err(|error| error.to_string())?;
   window.set_shadow(true).map_err(|error| error.to_string())?;
-  if let Some(placement) = placement {
-    window.unmaximize().map_err(|error| error.to_string())?;
-    window.set_size(placement.size).map_err(|error| error.to_string())?;
-    window.set_position(placement.position).map_err(|error| error.to_string())?;
-    if placement.maximized {
-      window.maximize().map_err(|error| error.to_string())?;
-    }
+  if placement.is_some_and(|placement| placement.maximized) {
+    window.maximize().map_err(|error| error.to_string())?;
   }
   Ok(())
 }
